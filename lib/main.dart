@@ -1,0 +1,1343 @@
+import 'dart:io';
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:watcher/watcher.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:tray_manager/tray_manager.dart';
+import 'package:window_manager/window_manager.dart';
+
+const String _vortexFolderPathKey = 'vortex_folder_path';
+const String _fileMappingsKey = 'file_mappings';
+const String _masterPinKey = 'master_pin';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await windowManager.ensureInitialized();
+
+  WindowOptions windowOptions = const WindowOptions(
+    size: Size(800, 600),
+    center: true,
+    backgroundColor: Colors.transparent,
+    skipTaskbar: false,
+    titleBarStyle: TitleBarStyle.normal,
+  );
+
+  windowManager.waitUntilReadyToShow(windowOptions, () async {
+    await windowManager.show();
+    await windowManager.focus();
+  });
+
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'GVortex',
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.deepPurple,
+          brightness: Brightness.dark,
+        ),
+        useMaterial3: true,
+      ),
+      home: const AuthWrapper(),
+    );
+  }
+}
+
+class AuthWrapper extends StatefulWidget {
+  const AuthWrapper({super.key});
+
+  @override
+  State<AuthWrapper> createState() => _AuthWrapperState();
+}
+
+class _AuthWrapperState extends State<AuthWrapper> {
+  bool _isAuthenticated = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_isAuthenticated) {
+      return PinAuthScreen(
+        onAuthenticated: () {
+          setState(() {
+            _isAuthenticated = true;
+          });
+        },
+        setAuthenticated: (value) {
+          setState(() {
+            _isAuthenticated = value;
+          });
+        },
+      );
+    }
+    return VaultExplorerScreen(
+      setAuthenticated: (value) {
+        setState(() {
+          _isAuthenticated = value;
+        });
+      },
+    );
+  }
+}
+
+class VaultExplorerScreen extends StatefulWidget {
+  final Directory? currentDirectory;
+  final Function(bool) setAuthenticated;
+
+  const VaultExplorerScreen({
+    super.key,
+    this.currentDirectory,
+    required this.setAuthenticated,
+  });
+
+  @override
+  State<VaultExplorerScreen> createState() => _VaultExplorerScreenState();
+}
+
+class _VaultExplorerScreenState extends State<VaultExplorerScreen>
+    with WindowListener, TrayListener {
+  List<FileSystemEntity> _vaultContents = [];
+  bool _isLoading = true;
+  String? _vortexPath;
+  StreamSubscription<WatchEvent>? _watcherSubscription;
+  late Directory _currentVaultDir;
+  late Directory _vaultRootDir;
+  final TextEditingController _folderNameController = TextEditingController();
+
+  // State for selection and clipboard
+  Set<FileSystemEntity> _selectedItems = {};
+  static List<FileSystemEntity> _clipboard = [];
+  static bool _isCutOperation = false;
+
+  // State for marquee selection
+  final GlobalKey _gridDetectorKey = GlobalKey();
+  Offset? _marqueeStart;
+  Rect? _marqueeRect;
+  final Map<int, GlobalKey> _itemKeys = {};
+
+  // State for double tap logic
+  Timer? _doubleTapTimer;
+  FileSystemEntity? _lastTappedEntity;
+
+  // State for custom context menu
+  OverlayEntry? _contextMenuOverlay;
+
+  @override
+  void initState() {
+    super.initState();
+    windowManager.addListener(this);
+    trayManager.addListener(this);
+    _configureWindowAndInitialize();
+  }
+
+  void _configureWindowAndInitialize() async {
+    await windowManager.setPreventClose(true);
+    final appDir = await getApplicationDocumentsDirectory();
+    _vaultRootDir = Directory(p.join(appDir.path, 'vault'));
+    _currentVaultDir = widget.currentDirectory ?? _vaultRootDir;
+    _initializeState();
+    _initTray();
+  }
+
+  Future<void> _initTray() async {
+    await trayManager.setIcon(
+      Platform.isWindows ? 'assets/app_icon.ico' : 'assets/app_icon.png',
+    );
+    Menu menu = Menu(items: [
+      MenuItem(key: 'show_window', label: 'Mostrar Aplicación'),
+      MenuItem.separator(),
+      MenuItem(key: 'exit_application', label: 'Cerrar Aplicación'),
+    ]);
+    await trayManager.setContextMenu(menu);
+    await trayManager.setToolTip('Galería Vórtice');
+  }
+
+  @override
+  void dispose() {
+    windowManager.removeListener(this);
+    trayManager.removeListener(this);
+    _watcherSubscription?.cancel();
+    _folderNameController.dispose();
+    _doubleTapTimer?.cancel();
+    _hideContextMenu();
+    super.dispose();
+  }
+
+  // --- Window and Tray Listener Methods ---
+  @override
+  void onWindowClose() => windowManager.hide();
+
+  @override
+  void onTrayIconMouseDown() {
+    windowManager.show();
+    widget.setAuthenticated(false);
+  }
+
+  @override
+  void onTrayIconRightMouseDown() => trayManager.popUpContextMenu();
+
+  @override
+  void onTrayMenuItemClick(MenuItem menuItem) {
+    if (menuItem.key == 'show_window') {
+      windowManager.show();
+      widget.setAuthenticated(false);
+    } else if (menuItem.key == 'exit_application') {
+      windowManager.destroy();
+    }
+  }
+
+  // --- Core Business Logic ---
+  Future<void> _initializeState() async {
+    await _loadVaultContents();
+    final prefs = await SharedPreferences.getInstance();
+    final path = prefs.getString(_vortexFolderPathKey);
+    if (path != null && path.isNotEmpty) {
+      setState(() => _vortexPath = path);
+      _startWatcher(path);
+    }
+  }
+
+  Future<void> _loadVaultContents() async {
+    setState(() => _isLoading = true);
+    if (!await _currentVaultDir.exists()) {
+      await _currentVaultDir.create(recursive: true);
+    }
+    final contents = await _currentVaultDir.list().toList();
+    contents.sort((a, b) {
+      if (a is Directory && b is File) return -1;
+      if (a is File && b is Directory) return 1;
+      return a.path.compareTo(b.path);
+    });
+    setState(() {
+      _vaultContents = contents;
+      _itemKeys.clear();
+      _isLoading = false;
+    });
+  }
+
+  void _startWatcher(String path) {
+    _watcherSubscription?.cancel();
+    final watcher = DirectoryWatcher(path);
+    _watcherSubscription = watcher.events.listen((event) {
+      if (event.type == ChangeType.ADD && _isImageFile(event.path)) {
+        Future.delayed(
+            const Duration(seconds: 1), () => _absorbImage(File(event.path)));
+      }
+    });
+  }
+
+  Future<String> _getUniqueVaultPath(
+      Directory destinationDir, String fileName) async {
+    String baseName = p.basenameWithoutExtension(fileName);
+    String extension = p.extension(fileName);
+    String newPath = p.join(destinationDir.path, fileName);
+    int counter = 1;
+    while (await File(newPath).exists() || await Directory(newPath).exists()) {
+      fileName = '$baseName ($counter)$extension';
+      newPath = p.join(destinationDir.path, fileName);
+      counter++;
+    }
+    return newPath;
+  }
+
+  Future<void> _absorbImage(File imageFile, {bool reloadUI = true}) async {
+    if (!await imageFile.exists()) return;
+    final prefs = await SharedPreferences.getInstance();
+    final originalPath = imageFile.path;
+    final originalFileName = p.basename(originalPath);
+
+    final newPathInVault =
+        await _getUniqueVaultPath(_vaultRootDir, originalFileName);
+    final newFileName = p.basename(newPathInVault);
+
+    final mappingsJson = prefs.getString(_fileMappingsKey) ?? '{}';
+    final mappings = Map<String, String>.from(json.decode(mappingsJson));
+    mappings[newFileName] = originalPath;
+
+    try {
+      await imageFile.rename(newPathInVault);
+      await prefs.setString(_fileMappingsKey, json.encode(mappings));
+      if (p.equals(_currentVaultDir.path, _vaultRootDir.path)) {
+        if (reloadUI) await _loadVaultContents();
+      }
+    } catch (e) {
+      debugPrint("Error al absorber ${imageFile.path}: $e");
+    }
+  }
+
+  Future<void> _moveEntity(
+      FileSystemEntity entity, Directory destination) async {
+    try {
+      final entityName = p.basename(entity.path);
+      final newPath = await _getUniqueVaultPath(destination, entityName);
+      await entity.rename(newPath);
+    } catch (e) {
+      debugPrint("Error moving entity: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error al mover el archivo: $e')),
+        );
+      }
+    }
+  }
+
+  // --- User Interaction Handlers ---
+
+  void _handleCut() {
+    _hideContextMenu();
+    if (_selectedItems.isEmpty) return;
+    setState(() {
+      _VaultExplorerScreenState._clipboard = _selectedItems.toList();
+      _VaultExplorerScreenState._isCutOperation = true;
+      _selectedItems.clear();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+          content: Text(
+              '${_VaultExplorerScreenState._clipboard.length} elemento(s) cortado(s).')),
+    );
+  }
+
+  Future<void> _handlePaste() async {
+    _hideContextMenu();
+    if (_VaultExplorerScreenState._clipboard.isEmpty) return;
+    for (final entity in _VaultExplorerScreenState._clipboard) {
+      await _moveEntity(entity, _currentVaultDir);
+    }
+    setState(() {
+      _VaultExplorerScreenState._clipboard = [];
+      _VaultExplorerScreenState._isCutOperation = false;
+    });
+    await _loadVaultContents();
+  }
+
+  void _showContextMenu(BuildContext context, Offset position) {
+    _hideContextMenu();
+    
+    final items = <_ContextMenuItem>[
+      if (_selectedItems.isNotEmpty)
+        _ContextMenuItem(
+          title: 'Mover',
+          onTap: _handleCut,
+        ),
+      if (_VaultExplorerScreenState._clipboard.isNotEmpty)
+        _ContextMenuItem(
+          title: 'Pegar',
+          onTap: _handlePaste,
+        ),
+    ];
+
+    if (items.isEmpty) return;
+
+    _contextMenuOverlay = OverlayEntry(
+      builder: (context) {
+        return Stack(
+          children: [
+            // Full screen detector to dismiss the menu
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: () {
+                  _hideContextMenu();
+                  setState(() => _selectedItems.clear());
+                },
+                onSecondaryTap: () {
+                  _hideContextMenu();
+                  setState(() => _selectedItems.clear());
+                },
+                child: Container(color: Colors.transparent),
+              ),
+            ),
+            // The actual menu
+            Positioned(
+              top: position.dy,
+              left: position.dx,
+              child: Material(
+                elevation: 4.0,
+                color: const Color(0xFF424242),
+                borderRadius: BorderRadius.circular(8.0),
+                child: IntrinsicWidth(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: items.map((item) {
+                      return InkWell(
+                        onTap: item.onTap,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(item.title)
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+    Overlay.of(context).insert(_contextMenuOverlay!);
+  }
+
+  void _hideContextMenu() {
+    if (_contextMenuOverlay != null) {
+      _contextMenuOverlay!.remove();
+      _contextMenuOverlay = null;
+    }
+  }
+
+  void _onItemTap(FileSystemEntity entity, {bool isDoubleClick = false}) {
+    if (isDoubleClick) {
+      if (entity is Directory) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => VaultExplorerScreen(
+              currentDirectory: entity,
+              setAuthenticated: widget.setAuthenticated,
+            ),
+          ),
+        ).then((_) => _loadVaultContents());
+      } else if (entity is File) {
+        final imageFiles = _vaultContents.whereType<File>().toList();
+        final initialIndex = imageFiles.indexOf(entity);
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => FullScreenImageViewer(
+              imageFiles: imageFiles,
+              initialIndex: initialIndex,
+              restoreCallback: (file) async => await _restoreImage(file),
+            ),
+          ),
+        ).then((_) => _loadVaultContents());
+      }
+      return;
+    }
+
+    // This handles single-click selection instantly.
+    setState(() {
+      _selectedItems = {entity};
+    });
+  }
+
+  void _handleItemTap(FileSystemEntity entity) {
+    // Instant selection on the first tap
+    _onItemTap(entity);
+
+    if (_doubleTapTimer != null &&
+        _doubleTapTimer!.isActive &&
+        _lastTappedEntity == entity) {
+      // Double tap detected
+      _doubleTapTimer!.cancel();
+      _lastTappedEntity = null;
+      _onItemTap(entity, isDoubleClick: true);
+    } else {
+      // First tap, start the timer
+      _lastTappedEntity = entity;
+      _doubleTapTimer?.cancel();
+      _doubleTapTimer = Timer(kDoubleTapTimeout, () {
+        _lastTappedEntity = null;
+      });
+    }
+  }
+
+  // --- Marquee Selection Handlers ---
+  void _onMarqueeStart(DragStartDetails details) {
+    _hideContextMenu();
+    _marqueeStart = details.localPosition;
+    _marqueeRect = null;
+    setState(() => _selectedItems.clear());
+  }
+
+  void _onMarqueeUpdate(DragUpdateDetails details) {
+    if (_marqueeStart == null) return;
+
+    final RenderBox? gridDetectorBox =
+        _gridDetectorKey.currentContext?.findRenderObject() as RenderBox?;
+    if (gridDetectorBox == null || !gridDetectorBox.hasSize) return;
+
+    setState(() {
+      _marqueeRect = Rect.fromPoints(_marqueeStart!, details.localPosition);
+      final tempSelection = <FileSystemEntity>{};
+
+      for (int i = 0; i < _vaultContents.length; i++) {
+        final key = _itemKeys[i];
+        if (key?.currentContext != null) {
+          final itemBox = key!.currentContext!.findRenderObject() as RenderBox;
+
+          final topLeftGlobal = itemBox.localToGlobal(Offset.zero);
+          final topLeftLocal = gridDetectorBox.globalToLocal(topLeftGlobal);
+
+          final itemRect = Rect.fromLTWH(topLeftLocal.dx, topLeftLocal.dy,
+              itemBox.size.width, itemBox.size.height);
+
+          if (_marqueeRect!.overlaps(itemRect)) {
+            tempSelection.add(_vaultContents[i]);
+          }
+        }
+      }
+      _selectedItems = tempSelection;
+    });
+  }
+
+  void _onMarqueeEnd(DragEndDetails details) {
+    setState(() {
+      _marqueeStart = null;
+      _marqueeRect = null;
+    });
+  }
+
+  // --- Dialogs and Other UI Helpers ---
+  Future<void> _selectVortexFolder() async {
+    bool confirm = await _showConfirmationDialog(
+          title: 'Seleccionar Carpeta Vórtice',
+          content:
+              'Las imágenes que ya están en esta carpeta y las que muevas en el futuro serán MOVIDAS a la raíz de la bóveda privada.\n\n¿Deseas continuar?',
+        ) ??
+        false;
+    if (!confirm) return;
+
+    try {
+      String? directoryPath = await FilePicker.platform.getDirectoryPath();
+      if (directoryPath != null) {
+        setState(() => _isLoading = true);
+        final directory = Directory(directoryPath);
+        final existingFiles = directory.listSync();
+        for (var fileEntity in existingFiles) {
+          if (fileEntity is File && _isImageFile(fileEntity.path)) {
+            await _absorbImage(fileEntity, reloadUI: false);
+          }
+        }
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_vortexFolderPathKey, directoryPath);
+        await _loadVaultContents();
+        setState(() {
+          _vortexPath = directoryPath;
+        });
+        _startWatcher(directoryPath);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error al procesar la carpeta: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _restoreAllAndClear() async {
+    bool confirm = await _showConfirmationDialog(
+          title: 'Restaurar Todo',
+          content:
+              '¿Deseas mover TODAS las imágenes de vuelta a la carpeta Vórtice? La app olvidará la carpeta después de esto.',
+        ) ??
+        false;
+    if (!confirm || !mounted) return;
+    setState(() => _isLoading = true);
+    final appDir = await getApplicationDocumentsDirectory();
+    final vaultDir = Directory(p.join(appDir.path, 'vault'));
+
+    List<File> allFiles = [];
+    await for (final entity in vaultDir.list(recursive: true)) {
+      if (entity is File) {
+        allFiles.add(entity);
+      }
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    final mappingsJson = prefs.getString(_fileMappingsKey) ?? '{}';
+    final mappings = Map<String, String>.from(json.decode(mappingsJson));
+
+    for (var file in allFiles) {
+      await _restoreImage(file, mappings: mappings, showSnackbar: false);
+    }
+    await prefs.remove(_fileMappingsKey);
+    await _clearVortexPathSetting();
+    await _loadVaultContents();
+    setState(() => _isLoading = false);
+  }
+
+  Future<void> _restoreImage(File imageFile,
+      {Map<String, String>? mappings, bool showSnackbar = true}) async {
+    if (!await imageFile.exists()) return;
+    final prefs = await SharedPreferences.getInstance();
+    final fileName = p.basename(imageFile.path);
+    if (mappings == null) {
+      final mappingsJson = prefs.getString(_fileMappingsKey) ?? '{}';
+      mappings = Map<String, String>.from(json.decode(mappingsJson));
+    }
+    final originalPath = mappings[fileName];
+    if (originalPath == null) {
+      debugPrint("No se encontró la ruta original para $fileName");
+      return;
+    }
+    try {
+      final vortexDir = Directory(p.dirname(originalPath));
+      if (!await vortexDir.exists()) {
+        await vortexDir.create(recursive: true);
+      }
+      await imageFile.rename(originalPath);
+      mappings.remove(fileName);
+      await prefs.setString(_fileMappingsKey, json.encode(mappings));
+      if (mounted && showSnackbar) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Imagen restaurada con éxito.')),
+        );
+      }
+    } catch (e) {
+      debugPrint("Error al restaurar ${imageFile.path}: $e");
+    }
+  }
+
+  Future<void> _clearVortexPathSetting() async {
+    await _watcherSubscription?.cancel();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_vortexFolderPathKey);
+    setState(() {
+      _vortexPath = null;
+    });
+  }
+
+  bool _isImageFile(String filePath) {
+    final lowercasedPath = filePath.toLowerCase();
+    return lowercasedPath.endsWith('.jpg') ||
+        lowercasedPath.endsWith('.jpeg') ||
+        lowercasedPath.endsWith('.png') ||
+        lowercasedPath.endsWith('.gif') ||
+        lowercasedPath.endsWith('.bmp') ||
+        lowercasedPath.endsWith('.webp');
+  }
+
+  Future<bool?> _showConfirmationDialog(
+      {required String title, required String content}) {
+    return showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(content),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancelar')),
+          TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Aceptar')),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showCreateFolderDialog() async {
+    _folderNameController.clear();
+    return showDialog(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: const Text('Crear Nueva Carpeta'),
+            content: TextField(
+              controller: _folderNameController,
+              autofocus: true,
+              decoration:
+                  const InputDecoration(hintText: "Nombre de la carpeta"),
+            ),
+            actions: [
+              TextButton(
+                child: const Text('Cancelar'),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+              TextButton(
+                child: const Text('Crear'),
+                onPressed: () async {
+                  if (_folderNameController.text.isNotEmpty) {
+                    final newDir = Directory(p.join(
+                        _currentVaultDir.path, _folderNameController.text));
+                    if (!await newDir.exists()) {
+                      await newDir.create();
+                      if (mounted) Navigator.of(context).pop();
+                      await _loadVaultContents();
+                    }
+                  }
+                },
+              ),
+            ],
+          );
+        });
+  }
+
+  // --- Build Methods ---
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: _isLoading ? const Text("Cargando...") : _buildBreadcrumbs(),
+        titleSpacing: 0,
+        backgroundColor: Colors.black26,
+        actions: [
+          if (!_isLoading && _vortexPath != null)
+            IconButton(
+              icon: const Icon(Icons.create_new_folder_outlined),
+              tooltip: 'Crear carpeta',
+              onPressed: _showCreateFolderDialog,
+            ),
+          if (!_isLoading &&
+              _vortexPath != null &&
+              widget.currentDirectory == null)
+            IconButton(
+              icon: const Icon(Icons.restore_from_trash),
+              tooltip: 'Restaurar todo y olvidar carpeta',
+              onPressed: _restoreAllAndClear,
+            ),
+        ],
+      ),
+      body: Center(
+        child: _isLoading
+            ? const CircularProgressIndicator()
+            : _vortexPath == null
+                ? _buildEmptyState(
+                    icon: Icons.all_inclusive,
+                    title: 'No has seleccionado una carpeta Vórtice.',
+                    subtitle:
+                        'Usa el botón para elegir una carpeta y empezar a vigilarla.',
+                  )
+                : _buildFileExplorerBody(),
+      ),
+      floatingActionButton: widget.currentDirectory == null
+          ? FloatingActionButton.extended(
+              onPressed: _selectVortexFolder,
+              label: Text(_vortexPath == null
+                  ? 'Seleccionar Vórtice'
+                  : 'Cambiar Vórtice'),
+              icon: const Icon(Icons.all_inclusive),
+            )
+          : null,
+    );
+  }
+
+  Widget _buildFileExplorerBody() {
+    return GestureDetector(
+      onTap: () {
+        _hideContextMenu();
+        setState(() => _selectedItems.clear());
+      },
+      onSecondaryTapUp: (details) {
+        _hideContextMenu();
+        setState(() => _selectedItems.clear());
+        _showContextMenu(context, details.globalPosition);
+      },
+      behavior: HitTestBehavior.opaque,
+      child: _vaultContents.isEmpty
+          ? SizedBox.expand(
+              child: _buildEmptyState(
+                icon: Icons.shield_outlined,
+                title: 'La carpeta está vacía.',
+                subtitle: _VaultExplorerScreenState._clipboard.isNotEmpty
+                    ? 'Haz clic derecho para pegar elementos.'
+                    : 'Mueve imágenes a tu carpeta Vórtice o crea nuevas carpetas.',
+              ),
+            )
+          : Stack(
+              children: [
+                GestureDetector(
+                  key: _gridDetectorKey,
+                  onPanStart: _onMarqueeStart,
+                  onPanUpdate: _onMarqueeUpdate,
+                  onPanEnd: _onMarqueeEnd,
+                  child: _buildFileExplorerGrid(),
+                ),
+                if (_marqueeRect != null)
+                  Positioned.fromRect(
+                    rect: _marqueeRect!,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.deepPurpleAccent, width: 1),
+                        color: Colors.deepPurpleAccent.withOpacity(0.2),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+    );
+  }
+
+  Widget _buildBreadcrumbs() {
+    String relativePath =
+        p.relative(_currentVaultDir.path, from: _vaultRootDir.path);
+    List<String> pathParts =
+        relativePath == '.' ? [] : relativePath.split(p.separator);
+
+    List<Widget> breadcrumbWidgets = [
+      InkWell(
+        onTap: () {
+          if (widget.currentDirectory != null) {
+            Navigator.of(context).popUntil((route) => route.isFirst);
+          }
+        },
+        child: const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 8.0),
+          child: Icon(Icons.home, size: 20),
+        ),
+      )
+    ];
+
+    for (int i = 0; i < pathParts.length; i++) {
+      breadcrumbWidgets.add(
+          const Icon(Icons.chevron_right, size: 16, color: Colors.white54));
+      breadcrumbWidgets.add(
+        InkWell(
+          onTap: () {
+            if (i < pathParts.length - 1) {
+              int popCount = (pathParts.length - 1) - i;
+              for (int j = 0; j < popCount; j++) {
+                Navigator.of(context).pop();
+              }
+            }
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4.0),
+            child: Text(pathParts[i], style: const TextStyle(fontSize: 16)),
+          ),
+        ),
+      );
+    }
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: breadcrumbWidgets,
+      ),
+    );
+  }
+
+  Widget _buildEmptyState(
+      {required IconData icon,
+      required String title,
+      required String subtitle}) {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(icon, size: 80, color: Colors.white54),
+        const SizedBox(height: 16),
+        Text(title,
+            style: const TextStyle(fontSize: 18), textAlign: TextAlign.center),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Text(subtitle,
+              style: const TextStyle(color: Colors.white70),
+              textAlign: TextAlign.center),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildFileExplorerGrid() {
+    return GridView.builder(
+      padding: const EdgeInsets.all(8.0),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 3,
+        crossAxisSpacing: 8.0,
+        mainAxisSpacing: 8.0,
+      ),
+      itemCount: _vaultContents.length,
+      itemBuilder: (context, index) {
+        final entity = _vaultContents[index];
+        _itemKeys.putIfAbsent(index, () => GlobalKey());
+        final itemWidget = _buildDraggableItem(entity);
+        return KeyedSubtree(
+          key: _itemKeys[index],
+          child: itemWidget,
+        );
+      },
+    );
+  }
+
+  Widget _buildDraggableItem(FileSystemEntity entity) {
+    List<FileSystemEntity> draggedItems = [];
+    if (_selectedItems.contains(entity)) {
+      draggedItems = _selectedItems.toList();
+    } else {
+      draggedItems = [entity];
+    }
+
+    return Draggable<List<FileSystemEntity>>(
+      data: draggedItems,
+      feedback: _buildDragFeedback(draggedItems),
+      dragAnchorStrategy: pointerDragAnchorStrategy,
+      childWhenDragging: Opacity(
+        opacity: 0.4,
+        child: entity is Directory
+            ? _buildFolderItem(entity)
+            : _buildImageItem(entity as File),
+      ),
+      child: entity is Directory
+          ? _buildFolderItem(entity)
+          : _buildImageItem(entity as File),
+    );
+  }
+
+  Widget _buildDragFeedback(List<FileSystemEntity> items) {
+    final firstItem = items.first;
+    return Material(
+      color: Colors.transparent,
+      child: Transform.translate(
+        offset: const Offset(-50, -50),
+        child: Stack(
+          children: [
+            SizedBox(
+              width: 100,
+              height: 100,
+              child: firstItem is File
+                  ? ClipRRect(
+                      borderRadius: BorderRadius.circular(8.0),
+                      child: Image.file(firstItem, fit: BoxFit.cover),
+                    )
+                  : const Icon(Icons.folder, size: 100, color: Colors.amber),
+            ),
+            if (items.length > 1)
+              Positioned(
+                top: 4,
+                right: 4,
+                child: Container(
+                  padding: const EdgeInsets.all(4),
+                  decoration: const BoxDecoration(
+                    color: Colors.deepPurple,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Text(
+                    items.length.toString(),
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFolderItem(Directory directory) {
+    final isSelected = _selectedItems.contains(directory);
+    return DragTarget<List<FileSystemEntity>>(
+      builder: (context, candidateData, rejectedData) {
+        final isHovered = candidateData.isNotEmpty;
+        return GestureDetector(
+          onTap: () => _handleItemTap(directory),
+          onSecondaryTapUp: (details) {
+            _hideContextMenu();
+            if (!_selectedItems.contains(directory)) {
+              setState(() => _selectedItems = {directory});
+            }
+            _showContextMenu(context, details.globalPosition);
+          },
+          child: Container(
+            decoration: BoxDecoration(
+              color: isHovered
+                  ? Colors.deepPurple.withOpacity(0.6)
+                  : isSelected
+                      ? Colors.deepPurple.withOpacity(0.4)
+                      : Colors.transparent,
+              borderRadius: BorderRadius.circular(8.0),
+              border: Border.all(
+                color: isHovered || isSelected
+                    ? Colors.deepPurpleAccent
+                    : Colors.transparent,
+                width: 2,
+              ),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.folder, size: 50, color: Colors.amber),
+                const SizedBox(height: 8),
+                Text(
+                  p.basename(directory.path),
+                  textAlign: TextAlign.center,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+      onWillAccept: (data) {
+        if (data == null) return false;
+        for (final entity in data) {
+          if (entity.path == directory.path ||
+              (entity is Directory &&
+                  p.isWithin(directory.path, entity.path))) {
+            return false;
+          }
+        }
+        return true;
+      },
+      onAccept: (data) async {
+        for (final entity in data) {
+          await _moveEntity(entity, directory);
+        }
+        setState(() => _selectedItems.clear());
+        await _loadVaultContents();
+      },
+    );
+  }
+
+  Widget _buildImageItem(File imageFile) {
+    final isSelected = _selectedItems.contains(imageFile);
+    return GestureDetector(
+      onTap: () => _handleItemTap(imageFile),
+      onSecondaryTapUp: (details) {
+        _hideContextMenu();
+        if (!_selectedItems.contains(imageFile)) {
+          setState(() => _selectedItems = {imageFile});
+        }
+        _showContextMenu(context, details.globalPosition);
+      },
+      child: Hero(
+        tag: imageFile.path,
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8.0),
+            border: Border.all(
+              color:
+                  isSelected ? Colors.deepPurpleAccent : Colors.transparent,
+              width: 2,
+            ),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(6.0),
+            child: Image.file(
+              imageFile,
+              fit: BoxFit.cover,
+              errorBuilder: (context, error, stackTrace) =>
+                  const Icon(Icons.broken_image),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ContextMenuItem {
+  final String title;
+  final VoidCallback onTap;
+  _ContextMenuItem({required this.title, required this.onTap});
+}
+
+// ... FullScreenImageViewer and PinAuthScreen remain the same ...
+class FullScreenImageViewer extends StatefulWidget {
+  final List<File> imageFiles;
+  final int initialIndex;
+  final Future<void> Function(File file) restoreCallback;
+
+  const FullScreenImageViewer({
+    super.key,
+    required this.imageFiles,
+    required this.initialIndex,
+    required this.restoreCallback,
+  });
+
+  @override
+  State<FullScreenImageViewer> createState() => _FullScreenImageViewerState();
+}
+
+class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
+  late PageController _pageController;
+  late int _currentIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+    _pageController = PageController(initialPage: widget.initialIndex);
+  }
+
+  Future<void> _restoreCurrentImage() async {
+    bool confirm = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Restaurar Imagen'),
+            content: const Text(
+                '¿Deseas mover esta imagen de vuelta a la carpeta Vórtice?'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Cancelar')),
+              TextButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text('Aceptar')),
+            ],
+          ),
+        ) ??
+        false;
+    if (!confirm || !mounted) return;
+    final currentFile = widget.imageFiles[_currentIndex];
+    await widget.restoreCallback(currentFile);
+    if (mounted) {
+      Navigator.of(context).pop();
+    }
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.close, color: Colors.white),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.restore, color: Colors.white),
+            tooltip: 'Restaurar a la carpeta Vórtice',
+            onPressed: _restoreCurrentImage,
+          ),
+        ],
+      ),
+      body: Stack(
+        alignment: Alignment.center,
+        children: [
+          PageView.builder(
+            controller: _pageController,
+            itemCount: widget.imageFiles.length,
+            onPageChanged: (index) {
+              setState(() {
+                _currentIndex = index;
+              });
+            },
+            itemBuilder: (context, index) {
+              final imageFile = widget.imageFiles[index];
+              return Hero(
+                tag: imageFile.path,
+                child: InteractiveViewer(
+                  panEnabled: false,
+                  minScale: 1.0,
+                  maxScale: 4.0,
+                  child: Image.file(
+                    imageFile,
+                    fit: BoxFit.contain,
+                  ),
+                ),
+              );
+            },
+          ),
+          if (_currentIndex > 0)
+            Positioned(
+              left: 10,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.5),
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
+                  icon: const Icon(Icons.arrow_back_ios_new,
+                      color: Colors.white),
+                  onPressed: () {
+                    _pageController.previousPage(
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.easeInOut,
+                    );
+                  },
+                ),
+              ),
+            ),
+          if (_currentIndex < widget.imageFiles.length - 1)
+            Positioned(
+              right: 10,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.5),
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
+                  icon:
+                      const Icon(Icons.arrow_forward_ios, color: Colors.white),
+                  onPressed: () {
+                    _pageController.nextPage(
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.easeInOut,
+                    );
+                  },
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+enum _AuthState { checking, setup, setupConfirm, login }
+
+class PinAuthScreen extends StatefulWidget {
+  final VoidCallback onAuthenticated;
+  final Function(bool) setAuthenticated;
+
+  const PinAuthScreen({
+    super.key,
+    required this.onAuthenticated,
+    required this.setAuthenticated,
+  });
+
+  @override
+  State<PinAuthScreen> createState() => _PinAuthScreenState();
+}
+
+class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
+  _AuthState _currentState = _AuthState.checking;
+  final _pinController = TextEditingController();
+  String _tempPin = '';
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    windowManager.addListener(this);
+    _checkPinStatus();
+  }
+
+  @override
+  void onWindowClose() {
+    windowManager.hide();
+    widget.setAuthenticated(true);
+  }
+
+  @override
+  void dispose() {
+    windowManager.removeListener(this);
+    _pinController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _checkPinStatus() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.containsKey(_masterPinKey)) {
+      setState(() => _currentState = _AuthState.login);
+    } else {
+      setState(() => _currentState = _AuthState.setup);
+    }
+  }
+
+  void _onPinSubmitted() async {
+    final enteredPin = _pinController.text;
+
+    if (enteredPin.length < 4 || enteredPin.length > 8) {
+      setState(() => _errorMessage = 'El PIN debe tener entre 4 y 8 dígitos.');
+      return;
+    }
+    setState(() => _errorMessage = null);
+
+    switch (_currentState) {
+      case _AuthState.setup:
+        _tempPin = enteredPin;
+        setState(() => _currentState = _AuthState.setupConfirm);
+        _pinController.clear();
+        break;
+      case _AuthState.setupConfirm:
+        if (enteredPin == _tempPin) {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(_masterPinKey, enteredPin);
+          widget.onAuthenticated();
+        } else {
+          setState(() {
+            _errorMessage = 'Los PIN no coinciden. Inténtalo de nuevo.';
+            _currentState = _AuthState.setup;
+          });
+          _pinController.clear();
+        }
+        break;
+      case _AuthState.login:
+        final prefs = await SharedPreferences.getInstance();
+        final savedPin = prefs.getString(_masterPinKey);
+        if (savedPin == enteredPin) {
+          widget.onAuthenticated();
+        } else {
+          setState(() => _errorMessage = 'PIN incorrecto.');
+          _pinController.clear();
+        }
+        break;
+      case _AuthState.checking:
+        break;
+    }
+  }
+
+  String _getTitle() {
+    switch (_currentState) {
+      case _AuthState.checking:
+        return 'Verificando...';
+      case _AuthState.setup:
+        return 'Crea tu PIN Maestro';
+      case _AuthState.setupConfirm:
+        return 'Confirma tu PIN';
+      case _AuthState.login:
+        return 'Ingresa tu PIN';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(32.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.security, size: 60),
+              const SizedBox(height: 20),
+              Text(_getTitle(), style: Theme.of(context).textTheme.headlineSmall),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: 200,
+                child: TextField(
+                  controller: _pinController,
+                  obscureText: true,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  textAlign: TextAlign.center,
+                  maxLength: 8,
+                  autofocus: true,
+                  decoration: InputDecoration(
+                    labelText: 'PIN',
+                    border: const OutlineInputBorder(),
+                    errorText: _errorMessage,
+                  ),
+                  onSubmitted: (_) => _onPinSubmitted(),
+                ),
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton(
+                onPressed: _onPinSubmitted,
+                child: const Text('Continuar'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
