@@ -13,8 +13,8 @@ import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
 const String _vortexFolderPathKey = 'vortex_folder_path';
-const String _fileMappingsKey = 'file_mappings';
 const String _masterPinKey = 'master_pin';
+const String _thumbnailExtentKey = 'thumbnail_extent';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -132,6 +132,14 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   // State for custom context menu
   OverlayEntry? _contextMenuOverlay;
+  OverlayEntry? _fullScreenOverlay;
+
+  // State for thumbnail size
+  double _thumbnailExtent = 150.0;
+  
+  // Scroll controller
+  final ScrollController _scrollController = ScrollController();
+
 
   @override
   void initState() {
@@ -171,6 +179,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _folderNameController.dispose();
     _doubleTapTimer?.cancel();
     _hideContextMenu();
+    _scrollController.dispose();
+    _hideFullScreenViewer();
     super.dispose();
   }
 
@@ -199,13 +209,19 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   // --- Core Business Logic ---
   Future<void> _initializeState() async {
-    await _loadVaultContents();
     final prefs = await SharedPreferences.getInstance();
+    final savedSize = prefs.getDouble(_thumbnailExtentKey) ?? 150.0;
     final path = prefs.getString(_vortexFolderPathKey);
-    if (path != null && path.isNotEmpty) {
-      setState(() => _vortexPath = path);
-      _startWatcher(path);
-    }
+    
+    setState(() {
+      _thumbnailExtent = savedSize;
+      if (path != null && path.isNotEmpty) {
+        _vortexPath = path;
+        _startWatcher(path);
+      }
+    });
+
+    await _loadVaultContents();
   }
 
   Future<void> _loadVaultContents() async {
@@ -237,7 +253,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     });
   }
 
-  Future<String> _getUniqueVaultPath(
+  Future<String> _getUniquePath(
       Directory destinationDir, String fileName) async {
     String baseName = p.basenameWithoutExtension(fileName);
     String extension = p.extension(fileName);
@@ -253,21 +269,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   Future<void> _absorbImage(File imageFile, {bool reloadUI = true}) async {
     if (!await imageFile.exists()) return;
-    final prefs = await SharedPreferences.getInstance();
-    final originalPath = imageFile.path;
-    final originalFileName = p.basename(originalPath);
-
+    final originalFileName = p.basename(imageFile.path);
     final newPathInVault =
-        await _getUniqueVaultPath(_vaultRootDir, originalFileName);
-    final newFileName = p.basename(newPathInVault);
-
-    final mappingsJson = prefs.getString(_fileMappingsKey) ?? '{}';
-    final mappings = Map<String, String>.from(json.decode(mappingsJson));
-    mappings[newFileName] = originalPath;
+        await _getUniquePath(_vaultRootDir, originalFileName);
 
     try {
       await imageFile.rename(newPathInVault);
-      await prefs.setString(_fileMappingsKey, json.encode(mappings));
       if (p.equals(_currentVaultDir.path, _vaultRootDir.path)) {
         if (reloadUI) await _loadVaultContents();
       }
@@ -280,7 +287,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       FileSystemEntity entity, Directory destination) async {
     try {
       final entityName = p.basename(entity.path);
-      final newPath = await _getUniqueVaultPath(destination, entityName);
+      final newPath = await _getUniquePath(destination, entityName);
       await entity.rename(newPath);
     } catch (e) {
       debugPrint("Error moving entity: $e");
@@ -312,39 +319,56 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   Future<void> _handlePaste() async {
     _hideContextMenu();
     if (_VaultExplorerScreenState._clipboard.isEmpty) return;
+    
     for (final entity in _VaultExplorerScreenState._clipboard) {
+      if (p.equals(p.dirname(entity.path), _currentVaultDir.path)) {
+        continue;
+      }
       await _moveEntity(entity, _currentVaultDir);
     }
+    
     setState(() {
       _VaultExplorerScreenState._clipboard = [];
       _VaultExplorerScreenState._isCutOperation = false;
     });
+    
     await _loadVaultContents();
   }
 
   void _showContextMenu(BuildContext context, Offset position) {
     _hideContextMenu();
     
-    final items = <_ContextMenuItem>[
+    final items = <Widget>[
       if (_selectedItems.isNotEmpty)
-        _ContextMenuItem(
-          title: 'Mover',
-          onTap: _handleCut,
-        ),
+        _ContextMenuItemWidget(
+            title: 'Mover',
+            onTap: _handleCut,
+            icon: Icons.drive_file_move_outline),
       if (_VaultExplorerScreenState._clipboard.isNotEmpty)
-        _ContextMenuItem(
-          title: 'Pegar',
-          onTap: _handlePaste,
-        ),
+        _ContextMenuItemWidget(
+            title: 'Pegar',
+            onTap: _handlePaste,
+            icon: Icons.content_paste_go),
+      if (_selectedItems.isNotEmpty) const Divider(height: 1, thickness: 1),
+      if (_selectedItems.isNotEmpty)
+        _ContextMenuItemWidget(
+            title: 'Exportar',
+            onTap: _handleExport,
+            icon: Icons.download_for_offline_outlined),
+      if (_selectedItems.isNotEmpty)
+        _ContextMenuItemWidget(
+            title: 'Eliminar',
+            onTap: _handleDelete,
+            icon: Icons.delete_forever_outlined,
+            isDestructive: true),
     ];
 
-    if (items.isEmpty) return;
+    if (items.whereType<_ContextMenuItemWidget>().isEmpty) return;
 
     _contextMenuOverlay = OverlayEntry(
       builder: (context) {
         return Stack(
           children: [
-            // Full screen detector to dismiss the menu
             Positioned.fill(
               child: GestureDetector(
                 onTap: () {
@@ -352,13 +376,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                   setState(() => _selectedItems.clear());
                 },
                 onSecondaryTap: () {
-                  _hideContextMenu();
-                  setState(() => _selectedItems.clear());
+                   _hideContextMenu();
+                   setState(() => _selectedItems.clear());
                 },
                 child: Container(color: Colors.transparent),
               ),
             ),
-            // The actual menu
             Positioned(
               top: position.dy,
               left: position.dx,
@@ -369,18 +392,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                 child: IntrinsicWidth(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
-                    children: items.map((item) {
-                      return InkWell(
-                        onTap: item.onTap,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
-                          child: Align(
-                            alignment: Alignment.centerLeft,
-                            child: Text(item.title)
-                          ),
-                        ),
-                      );
-                    }).toList(),
+                    children: items,
                   ),
                 ),
               ),
@@ -398,6 +410,25 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       _contextMenuOverlay = null;
     }
   }
+  
+  void _showFullScreenViewer(List<File> imageFiles, int initialIndex) {
+    _hideContextMenu();
+    _fullScreenOverlay = OverlayEntry(
+      builder: (context) => FullScreenImageViewer(
+        imageFiles: imageFiles,
+        initialIndex: initialIndex,
+        restoreCallback: (file) async => await _handleSingleRestore(file),
+        onClose: _hideFullScreenViewer,
+      ),
+    );
+    Overlay.of(context).insert(_fullScreenOverlay!);
+  }
+
+  void _hideFullScreenViewer() {
+    _fullScreenOverlay?.remove();
+    _fullScreenOverlay = null;
+  }
+
 
   void _onItemTap(FileSystemEntity entity, {bool isDoubleClick = false}) {
     if (isDoubleClick) {
@@ -414,16 +445,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       } else if (entity is File) {
         final imageFiles = _vaultContents.whereType<File>().toList();
         final initialIndex = imageFiles.indexOf(entity);
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => FullScreenImageViewer(
-              imageFiles: imageFiles,
-              initialIndex: initialIndex,
-              restoreCallback: (file) async => await _restoreImage(file),
-            ),
-          ),
-        ).then((_) => _loadVaultContents());
+        _showFullScreenViewer(imageFiles, initialIndex);
       }
       return;
     }
@@ -435,6 +457,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
 
   void _handleItemTap(FileSystemEntity entity) {
+    _hideContextMenu();
     // Instant selection on the first tap
     _onItemTap(entity);
 
@@ -540,70 +563,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     }
   }
 
-  Future<void> _restoreAllAndClear() async {
-    bool confirm = await _showConfirmationDialog(
-          title: 'Restaurar Todo',
-          content:
-              '¿Deseas mover TODAS las imágenes de vuelta a la carpeta Vórtice? La app olvidará la carpeta después de esto.',
-        ) ??
-        false;
-    if (!confirm || !mounted) return;
-    setState(() => _isLoading = true);
-    final appDir = await getApplicationDocumentsDirectory();
-    final vaultDir = Directory(p.join(appDir.path, 'vault'));
-
-    List<File> allFiles = [];
-    await for (final entity in vaultDir.list(recursive: true)) {
-      if (entity is File) {
-        allFiles.add(entity);
-      }
-    }
-
-    final prefs = await SharedPreferences.getInstance();
-    final mappingsJson = prefs.getString(_fileMappingsKey) ?? '{}';
-    final mappings = Map<String, String>.from(json.decode(mappingsJson));
-
-    for (var file in allFiles) {
-      await _restoreImage(file, mappings: mappings, showSnackbar: false);
-    }
-    await prefs.remove(_fileMappingsKey);
-    await _clearVortexPathSetting();
-    await _loadVaultContents();
-    setState(() => _isLoading = false);
-  }
-
-  Future<void> _restoreImage(File imageFile,
-      {Map<String, String>? mappings, bool showSnackbar = true}) async {
-    if (!await imageFile.exists()) return;
-    final prefs = await SharedPreferences.getInstance();
-    final fileName = p.basename(imageFile.path);
-    if (mappings == null) {
-      final mappingsJson = prefs.getString(_fileMappingsKey) ?? '{}';
-      mappings = Map<String, String>.from(json.decode(mappingsJson));
-    }
-    final originalPath = mappings[fileName];
-    if (originalPath == null) {
-      debugPrint("No se encontró la ruta original para $fileName");
-      return;
-    }
-    try {
-      final vortexDir = Directory(p.dirname(originalPath));
-      if (!await vortexDir.exists()) {
-        await vortexDir.create(recursive: true);
-      }
-      await imageFile.rename(originalPath);
-      mappings.remove(fileName);
-      await prefs.setString(_fileMappingsKey, json.encode(mappings));
-      if (mounted && showSnackbar) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Imagen restaurada con éxito.')),
-        );
-      }
-    } catch (e) {
-      debugPrint("Error al restaurar ${imageFile.path}: $e");
-    }
-  }
-
   Future<void> _clearVortexPathSetting() async {
     await _watcherSubscription?.cancel();
     final prefs = await SharedPreferences.getInstance();
@@ -704,17 +663,22 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             ),
         ],
       ),
-      body: Center(
-        child: _isLoading
-            ? const CircularProgressIndicator()
-            : _vortexPath == null
-                ? _buildEmptyState(
-                    icon: Icons.all_inclusive,
-                    title: 'No has seleccionado una carpeta Vórtice.',
-                    subtitle:
-                        'Usa el botón para elegir una carpeta y empezar a vigilarla.',
-                  )
-                : _buildFileExplorerBody(),
+      body: Column(
+        children: [
+          Expanded(
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : _vortexPath == null
+                    ? _buildEmptyState(
+                        icon: Icons.all_inclusive,
+                        title: 'No has seleccionado una carpeta Vórtice.',
+                        subtitle:
+                            'Usa el botón para elegir una carpeta y empezar a vigilarla.',
+                      )
+                    : _buildFileExplorerBody(),
+          ),
+          if (_vortexPath != null && !_isLoading) _buildThumbnailSlider(),
+        ],
       ),
       floatingActionButton: widget.currentDirectory == null
           ? FloatingActionButton.extended(
@@ -727,21 +691,50 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           : null,
     );
   }
+  
+  Widget _buildThumbnailSlider(){
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0),
+      child: Row(
+        children: [
+          const Icon(Icons.photo_size_select_small),
+          SizedBox(
+            width: 300,
+            child: Slider(
+              value: _thumbnailExtent,
+              min: 100,
+              max: 250,
+              divisions: 15,
+              label: '${_thumbnailExtent.toInt()}px',
+              onChanged: (value) async {
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setDouble(_thumbnailExtentKey, value);
+                setState(() {
+                  _thumbnailExtent = value;
+                });
+              },
+            ),
+          ),
+          const Icon(Icons.photo_size_select_large),
+        ],
+      ),
+    );
+  }
 
   Widget _buildFileExplorerBody() {
-    return GestureDetector(
-      onTap: () {
-        _hideContextMenu();
-        setState(() => _selectedItems.clear());
-      },
-      onSecondaryTapUp: (details) {
-        _hideContextMenu();
-        setState(() => _selectedItems.clear());
-        _showContextMenu(context, details.globalPosition);
-      },
-      behavior: HitTestBehavior.opaque,
-      child: _vaultContents.isEmpty
-          ? SizedBox.expand(
+    return _vaultContents.isEmpty
+        ? GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {
+              _hideContextMenu();
+              setState(() => _selectedItems.clear());
+            },
+            onSecondaryTapUp: (details) {
+              _hideContextMenu();
+              setState(() => _selectedItems.clear());
+              _showContextMenu(context, details.globalPosition);
+            },
+            child: SizedBox.expand(
               child: _buildEmptyState(
                 icon: Icons.shield_outlined,
                 title: 'La carpeta está vacía.',
@@ -749,29 +742,30 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                     ? 'Haz clic derecho para pegar elementos.'
                     : 'Mueve imágenes a tu carpeta Vórtice o crea nuevas carpetas.',
               ),
-            )
-          : Stack(
-              children: [
-                GestureDetector(
-                  key: _gridDetectorKey,
-                  onPanStart: _onMarqueeStart,
-                  onPanUpdate: _onMarqueeUpdate,
-                  onPanEnd: _onMarqueeEnd,
-                  child: _buildFileExplorerGrid(),
-                ),
-                if (_marqueeRect != null)
-                  Positioned.fromRect(
-                    rect: _marqueeRect!,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Colors.deepPurpleAccent, width: 1),
-                        color: Colors.deepPurpleAccent.withOpacity(0.2),
-                      ),
+            ),
+          )
+        : Stack(
+            children: [
+              GestureDetector(
+                onPanStart: _onMarqueeStart,
+                onPanUpdate: _onMarqueeUpdate,
+                onPanEnd: _onMarqueeEnd,
+                behavior: HitTestBehavior.translucent,
+                child: _buildFileExplorerGrid(),
+              ),
+              if (_marqueeRect != null)
+                Positioned.fromRect(
+                  rect: _marqueeRect!,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                          color: Colors.deepPurpleAccent, width: 1),
+                      color: Colors.deepPurpleAccent.withOpacity(0.2),
                     ),
                   ),
-              ],
-            ),
-    );
+                ),
+            ],
+          );
   }
 
   Widget _buildBreadcrumbs() {
@@ -846,23 +840,31 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
 
   Widget _buildFileExplorerGrid() {
-    return GridView.builder(
-      padding: const EdgeInsets.all(8.0),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        crossAxisSpacing: 8.0,
-        mainAxisSpacing: 8.0,
+    return Scrollbar(
+      controller: _scrollController,
+      thumbVisibility: true,
+      child: SingleChildScrollView(
+        key: _gridDetectorKey,
+        controller: _scrollController,
+        // Se ha ajustado el padding horizontal para dar más espacio
+        padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
+        child: Wrap(
+          spacing: 8.0,
+          runSpacing: 8.0,
+          children: List.generate(_vaultContents.length, (index) {
+            final entity = _vaultContents[index];
+            _itemKeys.putIfAbsent(index, () => GlobalKey());
+            return KeyedSubtree(
+              key: _itemKeys[index],
+              child: SizedBox(
+                width: _thumbnailExtent,
+                height: _thumbnailExtent,
+                child: _buildDraggableItem(entity),
+              ),
+            );
+          }),
+        ),
       ),
-      itemCount: _vaultContents.length,
-      itemBuilder: (context, index) {
-        final entity = _vaultContents[index];
-        _itemKeys.putIfAbsent(index, () => GlobalKey());
-        final itemWidget = _buildDraggableItem(entity);
-        return KeyedSubtree(
-          key: _itemKeys[index],
-          child: itemWidget,
-        );
-      },
     );
   }
 
@@ -962,12 +964,16 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(Icons.folder, size: 50, color: Colors.amber),
+                Icon(Icons.folder, size: _thumbnailExtent * 0.4, color: Colors.amber),
                 const SizedBox(height: 8),
-                Text(
-                  p.basename(directory.path),
-                  textAlign: TextAlign.center,
-                  overflow: TextOverflow.ellipsis,
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                  child: Text(
+                    p.basename(directory.path),
+                    textAlign: TextAlign.center,
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 2,
+                  ),
                 ),
               ],
             ),
@@ -1030,25 +1036,205 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       ),
     );
   }
+
+  Future<void> _handleDelete() async {
+    _hideContextMenu();
+    if (_selectedItems.isEmpty) return;
+    final count = _selectedItems.length;
+    final itemText =
+        count == 1 ? 'el elemento seleccionado' : 'los $count elementos seleccionados';
+    bool confirm = await _showConfirmationDialog(
+          title: 'Confirmar Eliminación',
+          content:
+              '¿Estás seguro de que quieres eliminar $itemText permanentemente? Esta acción no se puede deshacer.',
+        ) ??
+        false;
+    if (!confirm) {
+      setState(() => _selectedItems.clear());
+      return;
+    }
+
+    for (final entity in _selectedItems) {
+      if (entity.existsSync()) {
+        if (entity is File) {
+          await entity.delete();
+        } else if (entity is Directory) {
+          await entity.delete(recursive: true);
+        }
+      }
+    }
+    
+    setState(() {
+      _selectedItems.clear();
+    });
+    await _loadVaultContents();
+  }
+
+  Future<void> _handleExport() async {
+    _hideContextMenu();
+    if (_selectedItems.isEmpty) return;
+
+    final picturesDir = await _getPicturesDirectory();
+    if (picturesDir == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No se pudo encontrar la carpeta de imágenes.')));
+      }
+      return;
+    }
+
+    final exportRootDir = Directory(p.join(picturesDir.path, 'GVortex'));
+    await exportRootDir.create(recursive: true);
+
+    for (final entity in _selectedItems) {
+      final newPath = p.join(exportRootDir.path, p.basename(entity.path));
+      if (entity is File) {
+        await entity.copy(newPath);
+      } else if (entity is Directory) {
+        await _copyDirectory(entity, Directory(newPath));
+      }
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content:
+              Text('${_selectedItems.length} elemento(s) exportado(s) con éxito.')));
+    }
+    setState(() => _selectedItems.clear());
+  }
+
+  Future<void> _restoreAllAndClear() async {
+    bool confirm = await _showConfirmationDialog(
+          title: 'Restaurar Todo',
+          content:
+              '¿Deseas mover TODAS las imágenes y carpetas de vuelta a la carpeta Vórtice? La app olvidará la carpeta después de esto.',
+        ) ??
+        false;
+    if (!confirm || !mounted || _vortexPath == null) return;
+    
+    setState(() => _isLoading = true);
+    
+    final vortexDir = Directory(_vortexPath!);
+    await _restoreDirectoryContents(_vaultRootDir, vortexDir);
+    
+    await _clearVortexPathSetting();
+    await _loadVaultContents();
+    
+    setState(() => _isLoading = false);
+     if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Todos los archivos han sido restaurados.')),
+      );
+    }
+  }
+
+  Future<void> _restoreDirectoryContents(Directory source, Directory destination) async {
+    await for (final entity in source.list()) {
+      final newPath = p.join(destination.path, p.basename(entity.path));
+      if (entity is File) {
+        await entity.rename(await _getUniquePath(destination, p.basename(entity.path)));
+      } else if (entity is Directory) {
+        final newDestDir = Directory(await _getUniquePath(destination, p.basename(entity.path)));
+        await newDestDir.create();
+        await _restoreDirectoryContents(entity, newDestDir);
+        await entity.delete();
+      }
+    }
+  }
+
+  Future<void> _handleSingleRestore(File imageFile) async {
+    if (!await imageFile.exists() || _vortexPath == null) return;
+
+    final vortexDir = Directory(_vortexPath!);
+    final fileName = p.basename(imageFile.path);
+    final newPath = await _getUniquePath(vortexDir, fileName);
+
+    try {
+      await imageFile.rename(newPath);
+       if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Imagen restaurada con éxito.')),
+        );
+      }
+    } catch (e) {
+      debugPrint("Error al restaurar ${imageFile.path}: $e");
+    }
+  }
+
+
+  Future<Directory?> _getPicturesDirectory() async {
+    Directory? picturesDir;
+    if (Platform.isWindows) {
+      final userProfile = Platform.environment['USERPROFILE'];
+      if (userProfile != null) {
+        picturesDir = Directory(p.join(userProfile, 'Pictures'));
+      }
+    } else if (Platform.isLinux || Platform.isMacOS) {
+      final home = Platform.environment['HOME'];
+      if (home != null) {
+        picturesDir = Directory(p.join(home, 'Pictures'));
+      }
+    }
+    return picturesDir ?? await getDownloadsDirectory();
+  }
+
+  Future<void> _copyDirectory(Directory source, Directory destination) async {
+    await destination.create(recursive: true);
+    await for (final entity in source.list()) {
+      final newPath = p.join(destination.path, p.basename(entity.path));
+      if (entity is File) {
+        await entity.copy(newPath);
+      } else if (entity is Directory) {
+        await _copyDirectory(entity, Directory(newPath));
+      }
+    }
+  }
 }
 
-class _ContextMenuItem {
+class _ContextMenuItemWidget extends StatelessWidget {
   final String title;
+  final IconData icon;
   final VoidCallback onTap;
-  _ContextMenuItem({required this.title, required this.onTap});
+  final bool isDestructive;
+
+  const _ContextMenuItemWidget({
+    required this.title,
+    required this.icon,
+    required this.onTap,
+    this.isDestructive = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isDestructive ? Colors.redAccent : null;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: color),
+            const SizedBox(width: 12),
+            Text(title, style: TextStyle(color: color)),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
-// ... FullScreenImageViewer and PinAuthScreen remain the same ...
 class FullScreenImageViewer extends StatefulWidget {
   final List<File> imageFiles;
   final int initialIndex;
   final Future<void> Function(File file) restoreCallback;
+  final VoidCallback onClose;
 
   const FullScreenImageViewer({
     super.key,
     required this.imageFiles,
     required this.initialIndex,
     required this.restoreCallback,
+    required this.onClose,
   });
 
   @override
@@ -1087,9 +1273,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
     if (!confirm || !mounted) return;
     final currentFile = widget.imageFiles[_currentIndex];
     await widget.restoreCallback(currentFile);
-    if (mounted) {
-      Navigator.of(context).pop();
-    }
+    widget.onClose();
   }
 
   @override
@@ -1107,7 +1291,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.close, color: Colors.white),
-          onPressed: () => Navigator.of(context).pop(),
+          onPressed: widget.onClose,
         ),
         actions: [
           IconButton(
@@ -1340,4 +1524,3 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
     );
   }
 }
-
