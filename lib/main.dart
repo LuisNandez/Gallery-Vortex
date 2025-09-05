@@ -130,6 +130,9 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   Timer? _doubleTapTimer;
   FileSystemEntity? _lastTappedEntity;
 
+  // State for Shift selection
+  int? _shiftSelectionAnchorIndex;
+
   // State for custom context menu
   OverlayEntry? _contextMenuOverlay;
   OverlayEntry? _fullScreenOverlay;
@@ -239,6 +242,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       _vaultContents = contents;
       _itemKeys.clear();
       _isLoading = false;
+      _shiftSelectionAnchorIndex = null;
     });
   }
 
@@ -363,7 +367,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             isDestructive: true),
     ];
 
-    if (items.whereType<_ContextMenuItemWidget>().isEmpty) return;
+    if (items.whereType<_ContextMenuItemWidget>().isEmpty && _VaultExplorerScreenState._clipboard.isEmpty) return;
 
     _contextMenuOverlay = OverlayEntry(
       builder: (context) {
@@ -429,7 +433,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _fullScreenOverlay = null;
   }
 
-
   void _onItemTap(FileSystemEntity entity, {bool isDoubleClick = false}) {
     if (isDoubleClick) {
       if (entity is Directory) {
@@ -447,36 +450,66 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         final initialIndex = imageFiles.indexOf(entity);
         _showFullScreenViewer(imageFiles, initialIndex);
       }
-      return;
     }
+  }
 
-    // This handles single-click selection instantly.
+  void _handleItemTap(FileSystemEntity entity, int index) {
+    _hideContextMenu();
+
+    final isShiftPressed = RawKeyboard.instance.keysPressed
+            .contains(LogicalKeyboardKey.shiftLeft) ||
+        RawKeyboard.instance.keysPressed.contains(LogicalKeyboardKey.shiftRight);
+
+    final isCtrlPressed = RawKeyboard.instance.keysPressed
+            .contains(LogicalKeyboardKey.controlLeft) ||
+        RawKeyboard.instance.keysPressed.contains(LogicalKeyboardKey.controlRight) ||
+        (Platform.isMacOS &&
+            (RawKeyboard.instance.keysPressed
+                    .contains(LogicalKeyboardKey.metaLeft) ||
+                RawKeyboard.instance.keysPressed
+                    .contains(LogicalKeyboardKey.metaRight)));
+
     setState(() {
-      _selectedItems = {entity};
+      if (isShiftPressed) {
+        if (_shiftSelectionAnchorIndex == null) {
+          _shiftSelectionAnchorIndex = index;
+          _selectedItems = {entity};
+        } else {
+          final start =
+              index < _shiftSelectionAnchorIndex! ? index : _shiftSelectionAnchorIndex!;
+          final end =
+              index > _shiftSelectionAnchorIndex! ? index : _shiftSelectionAnchorIndex!;
+          _selectedItems =
+              _vaultContents.sublist(start, end + 1).toSet();
+        }
+      } else if (isCtrlPressed) {
+        if (_selectedItems.contains(entity)) {
+          _selectedItems.remove(entity);
+        } else {
+          _selectedItems.add(entity);
+        }
+        _shiftSelectionAnchorIndex = index;
+      } else {
+        if (_doubleTapTimer != null &&
+            _doubleTapTimer!.isActive &&
+            _lastTappedEntity == entity) {
+          _doubleTapTimer!.cancel();
+          _lastTappedEntity = null;
+          _onItemTap(entity, isDoubleClick: true);
+        } else {
+          _selectedItems = {entity};
+          _shiftSelectionAnchorIndex = index; 
+
+          _lastTappedEntity = entity;
+          _doubleTapTimer?.cancel();
+          _doubleTapTimer = Timer(kDoubleTapTimeout, () {
+            _lastTappedEntity = null;
+          });
+        }
+      }
     });
   }
 
-  void _handleItemTap(FileSystemEntity entity) {
-    _hideContextMenu();
-    // Instant selection on the first tap
-    _onItemTap(entity);
-
-    if (_doubleTapTimer != null &&
-        _doubleTapTimer!.isActive &&
-        _lastTappedEntity == entity) {
-      // Double tap detected
-      _doubleTapTimer!.cancel();
-      _lastTappedEntity = null;
-      _onItemTap(entity, isDoubleClick: true);
-    } else {
-      // First tap, start the timer
-      _lastTappedEntity = entity;
-      _doubleTapTimer?.cancel();
-      _doubleTapTimer = Timer(kDoubleTapTimeout, () {
-        _lastTappedEntity = null;
-      });
-    }
-  }
 
   // --- Marquee Selection Handlers ---
   void _onMarqueeStart(DragStartDetails details) {
@@ -727,7 +760,10 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             behavior: HitTestBehavior.opaque,
             onTap: () {
               _hideContextMenu();
-              setState(() => _selectedItems.clear());
+              setState(() {
+                _selectedItems.clear();
+                _shiftSelectionAnchorIndex = null;
+              });
             },
             onSecondaryTapUp: (details) {
               _hideContextMenu();
@@ -747,6 +783,18 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         : Stack(
             children: [
               GestureDetector(
+                onTap: () {
+                  setState(() {
+                    _selectedItems.clear();
+                    _shiftSelectionAnchorIndex = null;
+                  });
+                },
+                // MODIFICADO: Añadido para manejar el clic derecho en el fondo.
+                onSecondaryTapUp: (details) {
+                  _hideContextMenu();
+                  setState(() => _selectedItems.clear());
+                  _showContextMenu(context, details.globalPosition);
+                },
                 onPanStart: _onMarqueeStart,
                 onPanUpdate: _onMarqueeUpdate,
                 onPanEnd: _onMarqueeEnd,
@@ -846,29 +894,32 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       child: SingleChildScrollView(
         key: _gridDetectorKey,
         controller: _scrollController,
-        // Se ha ajustado el padding horizontal para dar más espacio
         padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
-        child: Wrap(
-          spacing: 8.0,
-          runSpacing: 8.0,
-          children: List.generate(_vaultContents.length, (index) {
-            final entity = _vaultContents[index];
-            _itemKeys.putIfAbsent(index, () => GlobalKey());
-            return KeyedSubtree(
-              key: _itemKeys[index],
-              child: SizedBox(
-                width: _thumbnailExtent,
-                height: _thumbnailExtent,
-                child: _buildDraggableItem(entity),
-              ),
-            );
-          }),
+        // MODIFICADO: Se envuelve el Wrap en un Align para forzar la posición.
+        child: Align(
+          alignment: Alignment.topLeft,
+          child: Wrap(
+            spacing: 8.0,
+            runSpacing: 8.0,
+            children: List.generate(_vaultContents.length, (index) {
+              final entity = _vaultContents[index];
+              _itemKeys.putIfAbsent(index, () => GlobalKey());
+              return KeyedSubtree(
+                key: _itemKeys[index],
+                child: SizedBox(
+                  width: _thumbnailExtent,
+                  height: _thumbnailExtent,
+                  child: _buildDraggableItem(entity, index),
+                ),
+              );
+            }),
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildDraggableItem(FileSystemEntity entity) {
+  Widget _buildDraggableItem(FileSystemEntity entity, int index) {
     List<FileSystemEntity> draggedItems = [];
     if (_selectedItems.contains(entity)) {
       draggedItems = _selectedItems.toList();
@@ -883,12 +934,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       childWhenDragging: Opacity(
         opacity: 0.4,
         child: entity is Directory
-            ? _buildFolderItem(entity)
-            : _buildImageItem(entity as File),
+            ? _buildFolderItem(entity, index)
+            : _buildImageItem(entity as File, index),
       ),
       child: entity is Directory
-          ? _buildFolderItem(entity)
-          : _buildImageItem(entity as File),
+          ? _buildFolderItem(entity, index)
+          : _buildImageItem(entity as File, index),
     );
   }
 
@@ -932,13 +983,13 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     );
   }
 
-  Widget _buildFolderItem(Directory directory) {
+  Widget _buildFolderItem(Directory directory, int index) {
     final isSelected = _selectedItems.contains(directory);
     return DragTarget<List<FileSystemEntity>>(
       builder: (context, candidateData, rejectedData) {
         final isHovered = candidateData.isNotEmpty;
         return GestureDetector(
-          onTap: () => _handleItemTap(directory),
+          onTap: () => _handleItemTap(directory, index),
           onSecondaryTapUp: (details) {
             _hideContextMenu();
             if (!_selectedItems.contains(directory)) {
@@ -1001,10 +1052,10 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     );
   }
 
-  Widget _buildImageItem(File imageFile) {
+  Widget _buildImageItem(File imageFile, int index) {
     final isSelected = _selectedItems.contains(imageFile);
     return GestureDetector(
-      onTap: () => _handleItemTap(imageFile),
+      onTap: () => _handleItemTap(imageFile, index),
       onSecondaryTapUp: (details) {
         _hideContextMenu();
         if (!_selectedItems.contains(imageFile)) {
