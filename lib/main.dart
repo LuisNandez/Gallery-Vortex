@@ -1,6 +1,5 @@
 import 'dart:io';
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -414,7 +413,33 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   void _showContextMenu(BuildContext context, Offset position) {
     _hideContextMenu();
-    
+    // Obtenemos el tamaño de la ventana para hacer el cálculo
+    final screenSize = MediaQuery.of(context).size;
+    // Estimamos un tamaño para el menú para hacer el cálculo más preciso
+    // (puedes ajustar estos valores si añades/quitas muchas opciones)
+    const estimatedMenuWidth = 150.0;
+    const estimatedMenuHeight = 200.0; 
+
+    double? top, bottom, left, right;
+
+    // Lógica para la posición VERTICAL
+    if (position.dy + estimatedMenuHeight > screenSize.height) {
+      // No hay espacio abajo, lo anclamos a la parte inferior
+      bottom = screenSize.height - position.dy;
+    } else {
+      // Hay espacio abajo, lo anclamos a la parte superior (comportamiento normal)
+      top = position.dy;
+    }
+
+    // Lógica para la posición HORIZONTAL
+    if (position.dx + estimatedMenuWidth > screenSize.width) {
+      // No hay espacio a la derecha, lo anclamos a la parte derecha
+      right = screenSize.width - position.dx;
+    } else {
+      // Hay espacio a la derecha, lo anclamos a la parte izquierda (comportamiento normal)
+      left = position.dx;
+    }
+
     final hasImageSelected = _selectedItems.any((item) => item is File);
     
     final items = <Widget>[
@@ -491,8 +516,10 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               ),
             ),
             Positioned(
-              top: position.dy,
-              left: position.dx,
+              top: top,
+              bottom: bottom,
+              left: left,
+              right: right,
               child: Material(
                 elevation: 4.0,
                 color: const Color(0xFF424242),
