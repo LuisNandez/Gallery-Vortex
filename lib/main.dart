@@ -173,6 +173,47 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _initTray();
   }
 
+  /// Mueve una carpeta entera desde el Vórtice a la bóveda.
+  Future<void> _absorbDirectory(Directory dir) async {
+    final dirName = p.basename(dir.path);
+    final newPathInVault = await _getUniquePath(_vaultRootDir, dirName);
+    try {
+      await dir.rename(newPathInVault);
+    } catch (e) {
+      debugPrint("Error al absorber la carpeta ${dir.path}: $e");
+    }
+  }
+
+  /// Revisa recursivamente si una carpeta es válida para ser absorbida.
+  /// Una carpeta es válida si no está vacía y solo contiene archivos de imagen
+  /// o otras subcarpetas válidas.
+  Future<bool> _isDirectoryValidForAbsorption(Directory dir) async {
+    final List<FileSystemEntity> contents = await dir.list().toList();
+
+    // Condición 1: La carpeta no puede estar vacía.
+    if (contents.isEmpty) {
+      return true;
+    }
+
+    for (final entity in contents) {
+      if (entity is File) {
+        // Condición 2: Si es un archivo, DEBE ser una imagen.
+        if (!_isImageFile(entity.path)) {
+          return false; // Se encontró un archivo no válido.
+        }
+      } else if (entity is Directory) {
+        // Condición 3: Si es una subcarpeta, debe ser válida también.
+        final isSubDirValid = await _isDirectoryValidForAbsorption(entity);
+        if (!isSubDirValid) {
+          return false; // La subcarpeta no es válida.
+        }
+      }
+    }
+
+    // Si pasó todas las validaciones, la carpeta es válida.
+    return true;
+  }
+
   Future<void> _initTray() async {
     await trayManager.setIcon(
       Platform.isWindows ? 'assets/app_icon.ico' : 'assets/app_icon.png',
@@ -237,7 +278,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         _vortexPath = path;
       });
       // Procesa archivos existentes en la carpeta Vórtice al iniciar
-      await _absorbImagesFromDirectory(Directory(path), reloadUI: false);
+      await _absorbInitialVortexContents(Directory(path), reloadUI: false);
       _startWatcher(path);
     }
 
@@ -340,13 +381,34 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
   
   /// Absorbe todos los archivos de imagen de un directorio dado hacia la bóveda.
-  Future<void> _absorbImagesFromDirectory(Directory directoryToProcess, {bool reloadUI = true}) async {
-    if (!await directoryToProcess.exists()) return;
+  // En _VaultExplorerScreenState dentro de main.dart
 
-    final existingFiles = directoryToProcess.listSync();
-    for (var fileEntity in existingFiles) {
-      if (fileEntity is File && _isImageFile(fileEntity.path)) {
-        await _absorbImage(fileEntity, reloadUI: false);
+  /// Procesa el contenido de la carpeta Vórtice, absorbiendo imágenes y carpetas válidas.
+  Future<void> _absorbInitialVortexContents(Directory vortexDir, {bool reloadUI = true}) async {
+    if (!await vortexDir.exists()) return;
+
+    final contents = await vortexDir.list().toList(); // Obtenemos una lista estática
+    for (final entity in contents) {
+      if (entity is File) {
+        // Si es un archivo de imagen, lo absorbemos directamente.
+        if (_isImageFile(entity.path)) {
+          await _absorbImage(entity, reloadUI: false);
+        }
+        // Los archivos que no son imágenes en la raíz se ignoran.
+      } else if (entity is Directory) {
+        // Si es una carpeta, primero validamos su contenido.
+        final bool isValid = await _isDirectoryValidForAbsorption(entity);
+        if (isValid) {
+          // Si es válida, la absorbemos por completo.
+          await _absorbDirectory(entity);
+        } else {
+          // Si no es válida, mostramos un mensaje de error.
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Carpeta "${p.basename(entity.path)}" ignorada: contiene archivos no válidos o está vacía.')),
+            );
+          }
+        }
       }
     }
 
@@ -738,7 +800,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         setState(() => _isLoading = true);
         final directory = Directory(directoryPath);
         
-        await _absorbImagesFromDirectory(directory, reloadUI: false);
+        await _absorbInitialVortexContents(directory, reloadUI: false);
 
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString(_vortexFolderPathKey, directoryPath);
