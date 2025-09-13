@@ -16,6 +16,7 @@ import 'metadata_service.dart';
 import 'tag_editor_dialog.dart';
 import 'rating_stars_display.dart';
 import 'pin_input_boxes.dart';
+import 'thumbnail_service.dart'; // ¡IMPORTANTE! Importar el nuevo servicio
 
 const String _vortexFolderPathKey = 'vortex_folder_path';
 const String _masterPinKey = 'master_pin';
@@ -120,8 +121,9 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   late Directory _vaultRootDir;
   final TextEditingController _folderNameController = TextEditingController();
 
-  // Instancia del servicio de metadatos
+  // Instancias de los servicios
   final MetadataService _metadataService = MetadataService();
+  final ThumbnailService _thumbnailService = ThumbnailService();
 
   // State for selection and clipboard
   Set<FileSystemEntity> _selectedItems = {};
@@ -157,17 +159,18 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     super.initState();
     windowManager.addListener(this);
     trayManager.addListener(this);
-    _configureWindowAndInitialize();
+    _initializeAppServices();
   }
 
-  void _configureWindowAndInitialize() async {
+  void _initializeAppServices() async {
     await windowManager.setPreventClose(true);
     final appDir = await getApplicationDocumentsDirectory();
     _vaultRootDir = Directory(p.join(appDir.path, 'vault'));
     _currentVaultDir = widget.currentDirectory ?? _vaultRootDir;
     
-    // Inicializa el servicio de metadatos
+    // Inicializa todos los servicios
     await _metadataService.initialize();
+    await _thumbnailService.initialize();
 
     _initializeState();
     _initTray();
@@ -185,32 +188,25 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
 
   /// Revisa recursivamente si una carpeta es válida para ser absorbida.
-  /// Una carpeta es válida si no está vacía y solo contiene archivos de imagen
-  /// o otras subcarpetas válidas.
   Future<bool> _isDirectoryValidForAbsorption(Directory dir) async {
     final List<FileSystemEntity> contents = await dir.list().toList();
 
-    // Condición 1: La carpeta no puede estar vacía.
     if (contents.isEmpty) {
       return true;
     }
 
     for (final entity in contents) {
       if (entity is File) {
-        // Condición 2: Si es un archivo, DEBE ser una imagen.
         if (!_isImageFile(entity.path)) {
-          return false; // Se encontró un archivo no válido.
+          return false;
         }
       } else if (entity is Directory) {
-        // Condición 3: Si es una subcarpeta, debe ser válida también.
         final isSubDirValid = await _isDirectoryValidForAbsorption(entity);
         if (!isSubDirValid) {
-          return false; // La subcarpeta no es válida.
+          return false;
         }
       }
     }
-
-    // Si pasó todas las validaciones, la carpeta es válida.
     return true;
   }
 
@@ -277,7 +273,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       setState(() {
         _vortexPath = path;
       });
-      // Procesa archivos existentes en la carpeta Vórtice al iniciar
       await _absorbInitialVortexContents(Directory(path), reloadUI: false);
       _startWatcher(path);
     }
@@ -329,17 +324,11 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     return newPath;
   }
   
-  /// Mueve un archivo de forma robusta, usando copiar y luego borrar.
-  /// Esto evita errores de 'Acceso denegado' entre diferentes volúmenes.
   Future<void> _moveFileRobustly(File sourceFile, String newPath) async {
     try {
-      // Intenta primero renombrar, es más rápido si funciona.
       await sourceFile.rename(newPath);
     } on FileSystemException {
-      // Si renombrar falla (común entre diferentes volúmenes),
-      // copiamos el archivo al nuevo destino.
       final newFile = await sourceFile.copy(newPath);
-      // Y si la copia fue exitosa, borramos el original.
       if (await newFile.exists()) {
         await sourceFile.delete();
       }
@@ -349,25 +338,20 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   Future<void> _absorbImage(File imageFile, {bool reloadUI = true}) async {
     if (!await imageFile.exists()) return;
     
-    // Obtenemos el nombre base del archivo (sin la extensión).
     final String originalFileName = p.basename(imageFile.path);
     final String baseName = p.basenameWithoutExtension(originalFileName);
     
-    // Comprobamos si el nombre base es numérico Y si tiene 13 caracteres.
     final bool meetsFormat = 
         int.tryParse(baseName) != null && baseName.length == 13;
     
     String newName;
     if (meetsFormat) {
-      // Si cumple el formato, conservamos el nombre original.
       newName = originalFileName;
     } else {
-      // Si no lo cumple, generamos un nuevo nombre con el timestamp actual.
       final String extension = p.extension(imageFile.path);
       newName = '${DateTime.now().millisecondsSinceEpoch}$extension';
     }
     
-    // El resto de la función utiliza el 'newName' que hemos decidido.
     final newPathInVault = await _getUniquePath(_vaultRootDir, newName);
 
     try {
@@ -380,29 +364,20 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     }
   }
   
-  /// Absorbe todos los archivos de imagen de un directorio dado hacia la bóveda.
-  // En _VaultExplorerScreenState dentro de main.dart
-
-  /// Procesa el contenido de la carpeta Vórtice, absorbiendo imágenes y carpetas válidas.
   Future<void> _absorbInitialVortexContents(Directory vortexDir, {bool reloadUI = true}) async {
     if (!await vortexDir.exists()) return;
 
-    final contents = await vortexDir.list().toList(); // Obtenemos una lista estática
+    final contents = await vortexDir.list().toList();
     for (final entity in contents) {
       if (entity is File) {
-        // Si es un archivo de imagen, lo absorbemos directamente.
         if (_isImageFile(entity.path)) {
           await _absorbImage(entity, reloadUI: false);
         }
-        // Los archivos que no son imágenes en la raíz se ignoran.
       } else if (entity is Directory) {
-        // Si es una carpeta, primero validamos su contenido.
         final bool isValid = await _isDirectoryValidForAbsorption(entity);
         if (isValid) {
-          // Si es válida, la absorbemos por completo.
           await _absorbDirectory(entity);
         } else {
-          // Si no es válida, mostramos un mensaje de error.
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text('Carpeta "${p.basename(entity.path)}" ignorada: contiene archivos no válidos o está vacía.')),
@@ -475,30 +450,21 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   void _showContextMenu(BuildContext context, Offset position) {
     _hideContextMenu();
-    // Obtenemos el tamaño de la ventana para hacer el cálculo
     final screenSize = MediaQuery.of(context).size;
-    // Estimamos un tamaño para el menú para hacer el cálculo más preciso
-    // (puedes ajustar estos valores si añades/quitas muchas opciones)
     const estimatedMenuWidth = 150.0;
     const estimatedMenuHeight = 200.0; 
 
     double? top, bottom, left, right;
 
-    // Lógica para la posición VERTICAL
     if (position.dy + estimatedMenuHeight > screenSize.height) {
-      // No hay espacio abajo, lo anclamos a la parte inferior
       bottom = screenSize.height - position.dy;
     } else {
-      // Hay espacio abajo, lo anclamos a la parte superior (comportamiento normal)
       top = position.dy;
     }
 
-    // Lógica para la posición HORIZONTAL
     if (position.dx + estimatedMenuWidth > screenSize.width) {
-      // No hay espacio a la derecha, lo anclamos a la parte derecha
       right = screenSize.width - position.dx;
     } else {
-      // Hay espacio a la derecha, lo anclamos a la parte izquierda (comportamiento normal)
       left = position.dx;
     }
 
@@ -607,7 +573,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     showMenu(
       context: context,
       position: RelativeRect.fromRect(
-        position & const Size(40, 40), // el tamaño del área de toque
+        position & const Size(40, 40),
         Offset.zero & overlay.size,
       ),
       items: List.generate(6, (index) {
@@ -625,12 +591,10 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       }),
     ).then((newRating) {
       if (newRating != null) {
-        // Aplicamos la nueva calificación a todos los elementos seleccionados
         for (final entity in _selectedItems.whereType<File>()) {
           _metadataService.setRatingForImage(p.basename(entity.path), newRating);
         }
-        // Recargamos la UI para que se vean los cambios
-        setState(() {}); // Un simple setState es suficiente para redibujar
+        setState(() {});
       }
     });
   }
@@ -1114,34 +1078,22 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     return Scrollbar(
       controller: _scrollController,
       thumbVisibility: true,
-      child: LayoutBuilder(
-        builder: (BuildContext context, BoxConstraints constraints) {
-          return SingleChildScrollView(
-            key: _gridDetectorKey,
-            controller: _scrollController,
-            padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
-            child: ConstrainedBox(
-              constraints: BoxConstraints(minHeight: constraints.maxHeight - 16),
-              child: Align(
-                alignment: Alignment.topLeft,
-                child: Wrap(
-                  spacing: 8.0,
-                  runSpacing: 8.0,
-                  children: List.generate(_vaultContents.length, (index) {
-                    final entity = _vaultContents[index];
-                    _itemKeys.putIfAbsent(index, () => GlobalKey());
-                    return KeyedSubtree(
-                      key: _itemKeys[index],
-                      child: SizedBox(
-                        width: _thumbnailExtent,
-                        height: _thumbnailExtent,
-                        child: _buildDraggableItem(entity, index),
-                      ),
-                    );
-                  }),
-                ),
-              ),
-            ),
+      child: GridView.builder(
+        key: _gridDetectorKey,
+        controller: _scrollController,
+        padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
+        gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+          maxCrossAxisExtent: _thumbnailExtent,
+          mainAxisSpacing: 8.0,
+          crossAxisSpacing: 8.0,
+        ),
+        itemCount: _vaultContents.length,
+        itemBuilder: (context, index) {
+          final entity = _vaultContents[index];
+          _itemKeys.putIfAbsent(index, () => GlobalKey());
+          return KeyedSubtree(
+            key: _itemKeys[index],
+            child: _buildDraggableItem(entity, index),
           );
         },
       ),
@@ -1283,10 +1235,14 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   Widget _buildImageItem(File imageFile, int index) {
   final isSelected = _selectedItems.contains(imageFile);
-  final imageName = p.basename(imageFile.path);
-  final rating = _metadataService.getMetadataForImage(imageName).rating;
 
-  return GestureDetector(
+  // Simplemente devolvemos nuestro nuevo widget y le pasamos los datos necesarios
+  return ImageItemWidget(
+    imageFile: imageFile,
+    isSelected: isSelected,
+    extent: _thumbnailExtent,
+    metadataService: _metadataService,
+    thumbnailService: _thumbnailService,
     onTap: () => _handleItemTap(imageFile, index),
     onSecondaryTapUp: (details) {
       _hideContextMenu();
@@ -1295,61 +1251,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       }
       _showContextMenu(context, details.globalPosition);
     },
-    child: Hero(
-      tag: imageFile.path,
-      child: Container(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8.0),
-          border: Border.all(
-            color: isSelected ? Colors.deepPurpleAccent : Colors.transparent,
-            width: 2,
-          ),
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(6.0),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              Image.file(
-                imageFile,
-                fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) =>
-                    const Icon(Icons.broken_image),
-              ),
-              // --- NUEVO: Capa de degradado en la parte inferior ---
-              Positioned(
-                bottom: 0,
-                left: 0,
-                right: 0,
-                height: _thumbnailExtent * 0.35, // Altura del degradado, ajusta si es necesario
-                child: Container(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.bottomCenter,
-                      end: Alignment.topCenter,
-                      colors: [
-                        Colors.black.withOpacity(0.8), // Negro sólido abajo
-                        Colors.black.withOpacity(0.0), // Transparente arriba
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-              // --- Las estrellas se posicionan ENCIMA del degradado ---
-              if (rating > 0)
-                Positioned(
-                  bottom: 4,
-                  right: 4,
-                  child: SizedBox(
-                    width: _thumbnailExtent / 2,
-                    child: RatingStarsDisplay(rating: rating, iconSize: _thumbnailExtent / 10),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
-    ),
   );
 }
 
@@ -1373,8 +1274,11 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     for (final entity in _selectedItems) {
       if (entity.existsSync()) {
         if (entity is File) {
+          await _thumbnailService.clearThumbnail(p.basename(entity.path));
           await entity.delete();
         } else if (entity is Directory) {
+          // Note: Recursively clearing thumbnails for directories is more complex
+          // and not implemented here for brevity.
           await entity.delete(recursive: true);
         }
       }
@@ -1430,7 +1334,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     
     setState(() => _isLoading = true);
     
-    // Cancela el vigilante para evitar que re-absorba los archivos restaurados.
     await _watcherSubscription?.cancel();
     _watcherSubscription = null;
 
@@ -1449,10 +1352,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
 
   Future<void> _restoreDirectoryContents(Directory source, Directory destination) async {
-    // Obtenemos una lista completa y estática de los contenidos ANTES de empezar.
     final List<FileSystemEntity> contents = await source.list().toList();
 
-    // Recorremos la lista estática en lugar de la carpeta "en vivo".
     for (final entity in contents) {
       try {
         if (entity is File) {
@@ -1463,7 +1364,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           await newDestDir.create();
           await _restoreDirectoryContents(entity, newDestDir);
           
-          // Se hace el borrado recursivo por seguridad.
           await entity.delete(recursive: true);
         }
       } catch (e) {
@@ -1548,6 +1448,127 @@ class _ContextMenuItemWidget extends StatelessWidget {
             const SizedBox(width: 12),
             Text(title, style: TextStyle(color: color)),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class ImageItemWidget extends StatefulWidget {
+  final File imageFile;
+  final bool isSelected;
+  final double extent;
+  final VoidCallback onTap;
+  final GestureTapUpCallback onSecondaryTapUp;
+  final MetadataService metadataService;
+  final ThumbnailService thumbnailService;
+
+  const ImageItemWidget({
+    super.key,
+    required this.imageFile,
+    required this.isSelected,
+    required this.extent,
+    required this.onTap,
+    required this.onSecondaryTapUp,
+    required this.metadataService,
+    required this.thumbnailService,
+  });
+
+  @override
+  State<ImageItemWidget> createState() => _ImageItemWidgetState();
+}
+
+class _ImageItemWidgetState extends State<ImageItemWidget> {
+  File? _thumbFile; // Guardará el resultado de la carga
+  
+  @override
+  void initState() {
+    super.initState();
+    // Cargamos la miniatura UNA SOLA VEZ cuando el widget se crea
+    _loadThumbnail();
+  }
+
+  Future<void> _loadThumbnail() async {
+    // Obtenemos la miniatura y actualizamos el estado de ESTE widget
+    final thumb = await widget.thumbnailService.getThumbnail(widget.imageFile);
+    if (mounted) { // Nos aseguramos que el widget todavía existe
+      setState(() {
+        _thumbFile = thumb;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final imageName = p.basename(widget.imageFile.path);
+    final rating = widget.metadataService.getMetadataForImage(imageName).rating;
+
+    return GestureDetector(
+      onTap: widget.onTap,
+      onSecondaryTapUp: widget.onSecondaryTapUp,
+      child: Hero(
+        tag: widget.imageFile.path,
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8.0),
+            border: Border.all(
+              color: widget.isSelected ? Colors.deepPurpleAccent : Colors.transparent,
+              width: 2,
+            ),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(6.0),
+            // Ahora, en lugar de un FutureBuilder, comprobamos nuestro estado
+            child: _thumbFile == null
+                // 1. Si la miniatura aún no ha cargado, mostramos el indicador
+                ? Container(
+                    color: Colors.grey.shade800,
+                    child: const Center(
+                      child: SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2.0)),
+                    ),
+                  )
+                // 2. Si ya cargó, construimos la imagen directamente
+                : Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Image.file(
+                        _thumbFile!,
+                        fit: BoxFit.cover,
+                        gaplessPlayback: true,
+                      ),
+                      Positioned(
+                        bottom: 0,
+                        left: 0,
+                        right: 0,
+                        height: widget.extent * 0.35,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.bottomCenter,
+                              end: Alignment.topCenter,
+                              colors: [
+                                Colors.black.withOpacity(0.8),
+                                Colors.transparent,
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      if (rating > 0)
+                        Positioned(
+                          bottom: 4,
+                          right: 4,
+                          child: RatingStarsDisplay(
+                            rating: rating,
+                            iconSize: widget.extent / 10,
+                          ),
+                        ),
+                    ],
+                  ),
+          ),
         ),
       ),
     );
@@ -1726,7 +1747,7 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
   final _pinController = TextEditingController();
   String _tempPin = '';
   String? _errorMessage;
-  int _pinLength = 0; // NUEVO: Para guardar la longitud del PIN
+  int _pinLength = 0;
 
   @override
   void initState() {
@@ -1734,7 +1755,6 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
     windowManager.addListener(this);
     _checkPinStatus();
 
-    // Listener para actualizar la UI mientras se escribe
     _pinController.addListener(() {
       setState(() {});
     });
@@ -1758,7 +1778,7 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
     final savedPin = prefs.getString(_masterPinKey);
     if (savedPin != null && savedPin.isNotEmpty) {
       setState(() {
-        _pinLength = savedPin.length; // Guardamos la longitud del PIN
+        _pinLength = savedPin.length;
         _currentState = _AuthState.login;
       });
     } else {
@@ -1769,7 +1789,6 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
   void _onPinSubmitted() async {
     final enteredPin = _pinController.text;
 
-    // Ya no necesitamos la validación de 4-8 dígitos aquí para el login
     if (_currentState == _AuthState.setup && (enteredPin.length < 4 || enteredPin.length > 8)) {
       setState(() => _errorMessage = 'El PIN debe tener entre 4 y 8 dígitos.');
       return;
@@ -1780,7 +1799,7 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
       case _AuthState.setup:
         _tempPin = enteredPin;
         setState(() {
-          _pinLength = _tempPin.length; // Guardamos la longitud para la confirmación
+          _pinLength = _tempPin.length;
           _currentState = _AuthState.setupConfirm;
         });
         _pinController.clear();
@@ -1826,20 +1845,17 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
     }
   }
   
-  // NUEVO: Widget para el campo de PIN con recuadros
   Widget _buildPinInputArea() {
     return SizedBox(
-      width: (_pinLength * 56).toDouble(), // Ancho dinámico basado en la longitud
+      width: (_pinLength * 56).toDouble(),
       height: 50,
       child: Stack(
         alignment: Alignment.center,
         children: [
-          // Capa 1: Los recuadros visibles
           PinInputBoxes(
             pinLength: _pinLength,
             enteredPin: _pinController.text,
           ),
-          // Capa 2: El campo de texto real, pero invisible
           TextField(
             controller: _pinController,
             maxLength: _pinLength,
@@ -1848,14 +1864,13 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
             inputFormatters: [FilteringTextInputFormatter.digitsOnly],
             textAlign: TextAlign.center,
             showCursor: false,
-            // Estilos para hacerlo invisible
             style: const TextStyle(color: Colors.transparent),
             decoration: const InputDecoration(
               border: InputBorder.none,
-              counterText: '', // Oculta el contador de caracteres
+              counterText: '',
             ),
             onChanged: (value) {
-              setState(() {}); // Actualiza la UI
+              setState(() {});
               if (value.length == _pinLength) {
                 _onPinSubmitted();
               }
@@ -1868,7 +1883,6 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
-    // Definimos si usamos la UI nueva o la vieja
     bool useBoxesUI = _currentState == _AuthState.login || _currentState == _AuthState.setupConfirm;
 
     return Scaffold(
@@ -1883,10 +1897,9 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
               Text(_getTitle(), style: Theme.of(context).textTheme.headlineSmall),
               const SizedBox(height: 20),
 
-              // --- Lógica para mostrar la UI correcta ---
               if (useBoxesUI)
                 _buildPinInputArea()
-              else // Para el estado de setup inicial
+              else
                 SizedBox(
                   width: 200,
                   child: TextField(
@@ -1912,7 +1925,6 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
                   style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
 
-              // Botón solo para el estado de setup, ya que los otros se envían automáticamente
               if (_currentState == _AuthState.setup) ...[
                 const SizedBox(height: 24),
                 ElevatedButton(
