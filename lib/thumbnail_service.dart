@@ -104,4 +104,7 @@ class ThumbnailService {
     }
     _cache.removeWhere((key, value) => p.basename(key) == originalImageName);
   }
+  void clearMemoryCache() {
+    _cache.clear();
+  }
 }

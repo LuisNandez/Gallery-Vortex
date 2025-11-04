@@ -10,6 +10,8 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:launch_at_startup/launch_at_startup.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 // Imports de los nuevos archivos
 import 'metadata_service.dart';
@@ -21,10 +23,21 @@ import 'thumbnail_service.dart'; // ¡IMPORTANTE! Importar el nuevo servicio
 const String _vortexFolderPathKey = 'vortex_folder_path';
 const String _masterPinKey = 'master_pin';
 const String _thumbnailExtentKey = 'thumbnail_extent';
+const String _closeActionKey = 'close_action'; // 'exit' or 'minimize'
+const String _startupActionKey = 'startup_action'; // bool
 
-void main() async {
+enum CloseAction { exit, minimize }
+
+void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   await windowManager.ensureInitialized();
+
+  PackageInfo packageInfo = await PackageInfo.fromPlatform();
+  launchAtStartup.setup(
+    appName: packageInfo.appName,
+    appPath: Platform.resolvedExecutable,
+    args: ['--minimized'],
+  );
 
   WindowOptions windowOptions = const WindowOptions(
     size: Size(800, 600),
@@ -35,8 +48,14 @@ void main() async {
   );
 
   windowManager.waitUntilReadyToShow(windowOptions, () async {
-    await windowManager.show();
-    await windowManager.focus();
+    if (args.contains('--minimized')) {
+      // Si existe (inicio automático), inicia oculta
+      await windowManager.hide();
+    } else {
+      // Si no existe (inicio manual), se muestra
+      await windowManager.show();
+      await windowManager.focus();
+    }
   });
 
   runApp(const MyApp());
@@ -61,6 +80,29 @@ class MyApp extends StatelessWidget {
   }
 }
 
+class BackgroundServiceScreen extends StatelessWidget {
+  const BackgroundServiceScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.shield_moon_outlined, size: 40, color: Colors.white38),
+            SizedBox(height: 16),
+            Text(
+              'GVortex está activo en segundo plano.',
+              style: TextStyle(color: Colors.white38),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class AuthWrapper extends StatefulWidget {
   const AuthWrapper({super.key});
 
@@ -68,11 +110,52 @@ class AuthWrapper extends StatefulWidget {
   State<AuthWrapper> createState() => _AuthWrapperState();
 }
 
-class _AuthWrapperState extends State<AuthWrapper> {
+class _AuthWrapperState extends State<AuthWrapper> with WindowListener {
   bool _isAuthenticated = false;
+  bool _isWindowVisible = true;
+
+  final GlobalKey<_VaultExplorerScreenState> _vaultExplorerKey = GlobalKey<_VaultExplorerScreenState>();
+
+  @override
+  void initState() {
+    super.initState();
+    windowManager.addListener(this);
+  }
+  
+  @override
+  void dispose() {
+    windowManager.removeListener(this);
+    super.dispose();
+  }
+
+  // --- NUEVOS LISTENERS DE VENTANA ---
+  @override
+  void onWindowHide() {
+    setState(() {
+      _isWindowVisible = false;
+      // Le decimos a VaultExplorer que libere sus recursos de UI.
+      _vaultExplorerKey.currentState?.pause();
+    });
+  }
+
+  @override
+  void onWindowShow() {
+    setState(() {
+      _isWindowVisible = true;
+      _isAuthenticated = false; // Forzar re-autenticación por seguridad.
+      // Le decimos a VaultExplorer que se prepare para ser mostrado.
+      _vaultExplorerKey.currentState?.resume();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
+    // Si la ventana no está visible, mostramos el widget ligero.
+    if (!_isWindowVisible) {
+      return const BackgroundServiceScreen();
+    }
+
+    // Si está visible, usamos la lógica de autenticación de siempre.
     if (!_isAuthenticated) {
       return PinAuthScreen(
         onAuthenticated: () {
@@ -87,7 +170,10 @@ class _AuthWrapperState extends State<AuthWrapper> {
         },
       );
     }
+
+    // Pasamos la key a VaultExplorerScreen para poder comunicarnos con él.
     return VaultExplorerScreen(
+      key: _vaultExplorerKey,
       setAuthenticated: (value) {
         setState(() {
           _isAuthenticated = value;
@@ -160,6 +246,27 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     windowManager.addListener(this);
     trayManager.addListener(this);
     _initializeAppServices();
+  }
+
+  void pause() {
+    print("VaultExplorer pausado. Liberando recursos de UI...");
+    setState(() {
+      // Vaciamos las listas grandes para liberar RAM.
+      _vaultContents.clear();
+      _itemKeys.clear();
+      _selectedItems.clear();
+      // Le pedimos al servicio de miniaturas que limpie su caché de memoria RAM.
+      _thumbnailService.clearMemoryCache();
+      // NO cancelamos el _watcherSubscription, ya que debe seguir funcionando.
+    });
+  }
+
+  void resume() {
+    print("VaultExplorer reanudado. Recargando contenido...");
+    // Si la vista no está cargada, la cargamos.
+    if (_vaultContents.isEmpty && _vortexPath != null) {
+      _loadVaultContents();
+    }
   }
 
   void _initializeAppServices() async {
@@ -238,7 +345,18 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   // --- Window and Tray Listener Methods ---
   @override
-  void onWindowClose() => windowManager.hide();
+  void onWindowClose() async { // <-- Convertir a async
+    // --- LÓGICA MODIFICADA ---
+    final prefs = await SharedPreferences.getInstance();
+    final closeAction = prefs.getString(_closeActionKey) ?? CloseAction.minimize.name;
+
+    if (closeAction == CloseAction.exit.name) {
+      windowManager.destroy(); // Cierra la app
+    } else {
+      windowManager.hide(); // Minimiza a la bandeja
+    }
+    // --- FIN DE LA MODIFICACIÓN ---
+  }
 
   @override
   void onTrayIconMouseDown() {
@@ -882,6 +1000,11 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               tooltip: 'Restaurar todo y olvidar carpeta',
               onPressed: _restoreAllAndClear,
             ),
+            IconButton(
+            icon: const Icon(Icons.settings_outlined),
+            tooltip: 'Ajustes',
+            onPressed: _openSettings,
+          ),
         ],
       ),
       body: Column(
@@ -1420,6 +1543,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       }
     }
   }
+  void _openSettings() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const SettingsScreen()),
+    );
+  }
 }
 
 class _ContextMenuItemWidget extends StatelessWidget {
@@ -1761,9 +1890,18 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
   }
 
   @override
-  void onWindowClose() {
-    windowManager.hide();
-    widget.setAuthenticated(true);
+  void onWindowClose() async { // <-- Convertir a async
+    // --- LÓGICA MODIFICADA ---
+    final prefs = await SharedPreferences.getInstance();
+    final closeAction = prefs.getString(_closeActionKey) ?? CloseAction.minimize.name;
+    
+    if (closeAction == CloseAction.exit.name) {
+      windowManager.destroy(); // Cierra la app
+    } else {
+      windowManager.hide(); // Minimiza a la bandeja
+      widget.setAuthenticated(true); // Mantiene el comportamiento original de saltar el auth si se minimiza
+    }
+    // --- FIN DE LA MODIFICACIÓN ---
   }
 
   @override
@@ -1936,6 +2074,146 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
           ),
         ),
       ),
+    );
+  }
+}
+
+class SettingsScreen extends StatefulWidget {
+  const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  CloseAction _closeAction = CloseAction.minimize;
+  bool _startup = false;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+  }
+
+  Future<void> _loadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    final closeActionName = prefs.getString(_closeActionKey) ?? CloseAction.minimize.name;
+    final startup = await launchAtStartup.isEnabled();
+
+    if (mounted) {
+      setState(() {
+        _closeAction = CloseAction.values.firstWhere(
+          (e) => e.name == closeActionName,
+          orElse: () => CloseAction.minimize,
+        );
+        _startup = startup;
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _setCloseAction(CloseAction? value) async {
+    if (value == null) return;
+    setState(() => _closeAction = value);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_closeActionKey, value.name);
+  }
+
+  Future<void> _setStartup(bool value) async {
+    setState(() => _startup = value);
+    try {
+      if (value) {
+        await launchAtStartup.enable();
+      } else {
+        await launchAtStartup.disable();
+      }
+
+      // Guardamos en prefs solo como respaldo (opcional)
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_startupActionKey, value);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              value 
+              ? 'Inicio automático activado.' 
+              : 'Inicio automático desactivado.'
+            ),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      // Si algo falla (ej. permisos), revertimos el switch
+      if (mounted) {
+        setState(() => _startup = !value);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error al cambiar el inicio automático: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Ajustes'),
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(16.0),
+              children: [
+                Text(
+                  'Comportamiento de la Aplicación',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        color: Theme.of(context).colorScheme.secondary,
+                        fontWeight: FontWeight.bold,
+                      ),
+                ),
+                const Divider(height: 20),
+                ListTile(
+                  title: const Text('Al presionar el botón de cerrar (X)'),
+                  subtitle: Text(_closeAction == CloseAction.minimize
+                      ? 'Minimizar a la bandeja'
+                      : 'Cerrar la aplicación'),
+                ),
+                RadioListTile<CloseAction>(
+                  title: const Text('Minimizar a la bandeja'),
+                  value: CloseAction.minimize,
+                  groupValue: _closeAction,
+                  onChanged: _setCloseAction,
+                ),
+                RadioListTile<CloseAction>(
+                  title: const Text('Cerrar la aplicación'),
+                  subtitle: const Text('La aplicación se cerrará completamente.'),
+                  value: CloseAction.exit,
+                  groupValue: _closeAction,
+                  onChanged: _setCloseAction,
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  'Inicio del Sistema',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        color: Theme.of(context).colorScheme.secondary,
+                        fontWeight: FontWeight.bold,
+                      ),
+                ),
+                const Divider(height: 20),
+                SwitchListTile(
+                  title: const Text('Iniciar con Windows'),
+                  subtitle: const Text('La app se iniciará automáticamente al encender el PC.'),
+                  value: _startup,
+                  onChanged: _setStartup,
+                ),
+              ],
+            ),
     );
   }
 }
