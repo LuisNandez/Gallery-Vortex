@@ -12,6 +12,8 @@ import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'video_player_widget.dart';
+import 'package:media_kit/media_kit.dart';
 
 // Imports de los nuevos archivos
 import 'metadata_service.dart';
@@ -30,6 +32,8 @@ enum CloseAction { exit, minimize }
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
+  
   await windowManager.ensureInitialized();
 
   PackageInfo packageInfo = await PackageInfo.fromPlatform();
@@ -239,6 +243,11 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   // Scroll controller
   final ScrollController _scrollController = ScrollController();
 
+  bool _isSupportedFile(String filePath) {
+  final ext = p.extension(filePath).toLowerCase();
+  return _isImageFile(filePath) || ['.mp4', '.mov', '.avi', '.mkv'].contains(ext);
+}
+
 
   @override
   void initState() {
@@ -415,13 +424,14 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       _isLoading = false;
       _shiftSelectionAnchorIndex = null;
     });
+    _thumbnailService.bulkGenerate(contents);
   }
 
   void _startWatcher(String path) {
     _watcherSubscription?.cancel();
     final watcher = DirectoryWatcher(path);
     _watcherSubscription = watcher.events.listen((event) {
-      if (event.type == ChangeType.ADD && _isImageFile(event.path)) {
+      if (event.type == ChangeType.ADD && _isSupportedFile(event.path)) {
         Future.delayed(
             const Duration(seconds: 1), () => _absorbImage(File(event.path)));
       }
@@ -488,7 +498,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     final contents = await vortexDir.list().toList();
     for (final entity in contents) {
       if (entity is File) {
-        if (_isImageFile(entity.path)) {
+        if (_isSupportedFile(entity.path)) {
           await _absorbImage(entity, reloadUI: false);
         }
       } else if (entity is Directory) {
@@ -1632,6 +1642,8 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
     final imageName = p.basename(widget.imageFile.path);
     final rating = widget.metadataService.getMetadataForImage(imageName).rating;
 
+    final bool isVideo = ['.mp4', '.mov', '.avi', '.mkv'].contains(p.extension(imageName).toLowerCase());
+
     return GestureDetector(
       onTap: widget.onTap,
       onSecondaryTapUp: widget.onSecondaryTapUp,
@@ -1667,6 +1679,21 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
                         _thumbFile!,
                         fit: BoxFit.cover,
                         gaplessPlayback: true,
+                      ),
+                      if (isVideo)
+                      Center(
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: const BoxDecoration(
+                            color: Colors.black26, 
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.play_arrow, 
+                            color: Colors.white, 
+                            size: 40,
+                          ),
+                        ),
                       ),
                       Positioned(
                         bottom: 0,
@@ -1795,6 +1822,14 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
             },
             itemBuilder: (context, index) {
               final imageFile = widget.imageFiles[index];
+              
+              // Detectamos si es un video por la extensión
+              final String extension = p.extension(imageFile.path).toLowerCase();
+              final bool isVideo = ['.mp4', '.mov', '.avi', '.mkv'].contains(extension);
+              if (isVideo) {
+                // Retornamos el video SIN Hero para evitar el congelamiento
+                return VideoViewerWidget(videoFile: imageFile);
+              }
               return Hero(
                 tag: imageFile.path,
                 child: InteractiveViewer(

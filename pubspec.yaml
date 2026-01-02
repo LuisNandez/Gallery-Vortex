@@ -1,7 +1,7 @@
 name: gallery
 description: "A new Flutter project."
 publish_to: 'none'
-version: 0.4.0+1
+version: 0.7.0+1
 
 environment:
   sdk: '>=3.4.1 <4.0.0'
@@ -26,6 +26,13 @@ dependencies:
   window_manager: ^0.3.8
 
   cupertino_icons: ^1.0.6
+  video_player: ^2.8.1
+  fc_native_video_thumbnail: ^0.17.2
+  chewie: ^1.8.1
+  video_player_win: ^3.2.2
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  media_kit_libs_video: ^1.0.7
 
 dev_dependencies:
   flutter_test:
