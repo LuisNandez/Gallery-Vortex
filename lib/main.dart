@@ -767,6 +767,11 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       if (_selectedItems.isNotEmpty) const Divider(height: 1, thickness: 1),
       if (_selectedItems.isNotEmpty)
         _ContextMenuItemWidget(
+            title: 'Restaurar',
+            onTap: _handleRestoreSelected,
+            icon: Icons.restore),
+      if (_selectedItems.isNotEmpty)
+        _ContextMenuItemWidget(
             title: 'Exportar',
             onTap: _handleExport,
             icon: Icons.download_for_offline_outlined),
@@ -776,6 +781,17 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             onTap: _handleDelete,
             icon: Icons.delete_forever_outlined,
             isDestructive: true),
+      if (_vortexPath != null) ...[
+        const Divider(height: 1, thickness: 1),
+        _ContextMenuItemWidget(
+            title: 'Restaurar Todo',
+            onTap: () {
+              _hideContextMenu();
+              _restoreAllAndClear(); 
+            },
+            icon: Icons.settings_backup_restore,
+            isDestructive: true), // Lo marcamos en rojo porque vacía toda la bóveda
+      ],
     ];
 
     if (items.whereType<_ContextMenuItemWidget>().isEmpty && _VaultExplorerScreenState._clipboard.isEmpty && !hasImageSelected) return;
@@ -1655,18 +1671,26 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     bool confirm = await _showConfirmationDialog(
           title: 'Restaurar Todo',
           content:
-              '¿Deseas mover TODAS las imágenes y carpetas de vuelta a la carpeta Vórtice? La app olvidará la carpeta después de esto.',
+              '¿Deseas sacar TODAS las imágenes y carpetas de la bóveda? La app olvidará la carpeta Vórtice después de esto.',
         ) ??
         false;
-    if (!confirm || !mounted || _vortexPath == null) return;
+    if (!confirm || !mounted) return;
+
+    // NUEVO: Pedimos la carpeta de destino donde se vaciará todo
+    String? selectedDirectory = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: 'Seleccionar carpeta destino para vaciar la bóveda',
+    );
+
+    if (selectedDirectory == null) return;
+    final destinationDir = Directory(selectedDirectory);
     
     setState(() => _isLoading = true);
     
     await _watcherSubscription?.cancel();
     _watcherSubscription = null;
 
-    final vortexDir = Directory(_vortexPath!);
-    await _restoreDirectoryContents(_vaultRootDir, vortexDir);
+    // Ejecuta la función recursiva que ya tiene la lógica de limpiar nombres
+    await _restoreDirectoryContents(_vaultRootDir, destinationDir);
     
     await _clearVortexPathSetting();
     await _loadVaultContents();
@@ -1674,7 +1698,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     setState(() => _isLoading = false);
      if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Todos los archivos han sido restaurados.')),
+        const SnackBar(content: Text('Todos los archivos han sido restaurados exitosamente.')),
       );
     }
   }
@@ -1684,13 +1708,21 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
     for (final entity in contents) {
       try {
+        final idToDelete = p.relative(entity.path, from: _vaultRootDir.path);
+
         if (entity is File) {
-          final newPath = await _getUniquePath(destination, p.basename(entity.path));
+          // NUEVO: Desciframos el nombre aquí también para los archivos internos
+          final cleanName = _getDeobfuscatedName(p.basename(entity.path));
+          final newPath = await _getUniquePath(destination, cleanName);
+          
+          await _metadataService.deleteMetadata(idToDelete); 
           await _moveFileRobustly(entity, newPath);
         } else if (entity is Directory) {
           final newDestDir = Directory(await _getUniquePath(destination, p.basename(entity.path)));
           await newDestDir.create();
+          
           await _restoreDirectoryContents(entity, newDestDir);
+          await _metadataService.deleteMetadata(idToDelete);
           
           await entity.delete(recursive: true);
         }
@@ -1701,40 +1733,60 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
 
 
-  Future<void> _handleSingleRestore(File imageFile) async {
-    if (!await imageFile.exists() || _vortexPath == null) return;
+  Future<void> _handleRestoreSelected() async {
+    _hideContextMenu();
+    if (_selectedItems.isEmpty) return;
 
-    final vortexDir = Directory(_vortexPath!);
-    final fileName = p.basename(imageFile.path);
-    final newPath = await _getUniquePath(vortexDir, fileName);
+    // 1. Abrimos el selector de carpetas
+    String? selectedDirectory = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: 'Seleccionar carpeta para restaurar',
+    );
 
-    try {
-      await _moveFileRobustly(imageFile, newPath);
-       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Imagen restaurada con éxito.')),
-        );
-      }
-    } catch (e) {
-      debugPrint("Error al restaurar ${imageFile.path}: $e");
+    if (selectedDirectory == null) return;
+    final destinationDir = Directory(selectedDirectory);
+
+    final count = _selectedItems.length;
+    final itemText = count == 1 ? 'el elemento seleccionado' : 'los $count elementos seleccionados';
+    bool confirm = await _showConfirmationDialog(
+          title: 'Confirmar Restauración',
+          content: '¿Deseas mover $itemText a la carpeta seleccionada y quitarlos de la bóveda?',
+        ) ?? false;
+        
+    if (!confirm) {
+      setState(() => _selectedItems.clear());
+      return;
     }
-  }
 
+    for (final entity in _selectedItems) {
+      final idToDelete = p.relative(entity.path, from: _vaultRootDir.path);
 
-  Future<Directory?> _getPicturesDirectory() async {
-    Directory? picturesDir;
-    if (Platform.isWindows) {
-      final userProfile = Platform.environment['USERPROFILE'];
-      if (userProfile != null) {
-        picturesDir = Directory(p.join(userProfile, 'Pictures'));
-      }
-    } else if (Platform.isLinux || Platform.isMacOS) {
-      final home = Platform.environment['HOME'];
-      if (home != null) {
-        picturesDir = Directory(p.join(home, 'Pictures'));
+      if (entity is File) {
+        // NUEVO: Desciframos el nombre para recuperar la extensión original (.mp4, .jpg, etc.)
+        final cleanName = _getDeobfuscatedName(p.basename(entity.path));
+        final newPath = await _getUniquePath(destinationDir, cleanName);
+        
+        await _metadataService.deleteMetadata(idToDelete);
+        await _moveFileRobustly(entity, newPath);
+      } else if (entity is Directory) {
+        final newDestDir = Directory(await _getUniquePath(destinationDir, p.basename(entity.path)));
+        await newDestDir.create();
+        
+        await _restoreDirectoryContents(entity, newDestDir);
+        await _metadataService.deleteMetadata(idToDelete);
+        await entity.delete(recursive: true);
       }
     }
-    return picturesDir ?? await getDownloadsDirectory();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$count elemento(s) restaurado(s) con éxito a ${destinationDir.path}.')),
+      );
+    }
+    
+    setState(() {
+      _selectedItems.clear();
+    });
+    await _loadVaultContents(quiet: true);
   }
 
   Future<void> _copyDirectory(Directory source, Directory destination) async {

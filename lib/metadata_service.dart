@@ -113,12 +113,21 @@ class MetadataService {
     // 1. Si es un archivo individual que se movió
     if (_imageData.containsKey(oldId)) {
       final metadata = _imageData.remove(oldId)!;
-      _imageData[newId] = metadata;
-      await _db.update(
+      _imageData[newId] = metadata; // Actualizamos memoria RAM
+      
+      // Eliminamos el rastro de la ruta antigua
+      await _db.delete('metadata', where: 'image_id = ?', whereArgs: [oldId]);
+      
+      // Insertamos en la nueva ruta. 'ConflictAlgorithm.replace' es la magia:
+      // Si existía un "registro fantasma" con esa ruta, lo sobrescribe sin dar error.
+      await _db.insert(
         'metadata',
-        {'image_id': newId},
-        where: 'image_id = ?',
-        whereArgs: [oldId],
+        {
+          'image_id': newId,
+          'tags': jsonEncode(metadata.tags),
+          'rating': metadata.rating,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
       );
     }
     
@@ -127,15 +136,21 @@ class MetadataService {
     final keysToUpdate = _imageData.keys.where((k) => k.startsWith(prefix)).toList();
     
     for (final key in keysToUpdate) {
-      // Reemplazamos la parte vieja de la ruta por la nueva
       final newKey = newId + key.substring(oldId.length);
       final metadata = _imageData.remove(key)!;
       _imageData[newKey] = metadata;
-      await _db.update(
+      
+      // Mismo proceso: Borrar el viejo e insertar/reemplazar el nuevo
+      await _db.delete('metadata', where: 'image_id = ?', whereArgs: [key]);
+      
+      await _db.insert(
         'metadata',
-        {'image_id': newKey},
-        where: 'image_id = ?',
-        whereArgs: [key],
+        {
+          'image_id': newKey,
+          'tags': jsonEncode(metadata.tags),
+          'rating': metadata.rating,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
       );
     }
   }
