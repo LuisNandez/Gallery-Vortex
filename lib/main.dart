@@ -287,7 +287,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   // State for custom context menu
   OverlayEntry? _contextMenuOverlay;
-  OverlayEntry? _fullScreenOverlay;
 
   // State for thumbnail size
   double _thumbnailExtent = 150.0;
@@ -402,7 +401,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _doubleTapTimer?.cancel();
     _hideContextMenu();
     _scrollController.dispose();
-    _hideFullScreenViewer();
     super.dispose();
   }
 
@@ -865,20 +863,20 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   
   void _showFullScreenViewer(List<File> imageFiles, int initialIndex) {
     _hideContextMenu();
-    _fullScreenOverlay = OverlayEntry(
-      builder: (context) => FullScreenImageViewer(
-        imageFiles: imageFiles,
-        initialIndex: initialIndex,
-        restoreCallback: (file) async => await _handleSingleRestore(file),
-        onClose: _hideFullScreenViewer,
+    
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => FullScreenImageViewer(
+          imageFiles: imageFiles,
+          initialIndex: initialIndex,
+          exportCallback: (file) async => await _handleSingleExport(file),
+          onClose: () => Navigator.pop(context), // Cierra la pantalla de forma nativa
+          metadataService: _metadataService,
+          vaultRootPath: _vaultRootDir.path,
+        ),
       ),
     );
-    Overlay.of(context).insert(_fullScreenOverlay!);
-  }
-
-  void _hideFullScreenViewer() {
-    _fullScreenOverlay?.remove();
-    _fullScreenOverlay = null;
   }
 
   void _onItemTap(FileSystemEntity entity, {bool isDoubleClick = false}) {
@@ -1592,33 +1590,65 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _hideContextMenu();
     if (_selectedItems.isEmpty) return;
 
-    final picturesDir = await _getPicturesDirectory();
-    if (picturesDir == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('No se pudo encontrar la carpeta de imágenes.')));
-      }
-      return;
-    }
+    // 1. Abrimos el selector de carpetas de Windows
+    String? selectedDirectory = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: 'Seleccionar carpeta de exportación',
+    );
 
-    final exportRootDir = Directory(p.join(picturesDir.path, 'GVortex'));
-    await exportRootDir.create(recursive: true);
+    // Si el usuario cierra la ventana sin elegir nada, cancelamos
+    if (selectedDirectory == null) return;
+
+    final exportRootDir = Directory(selectedDirectory);
 
     for (final entity in _selectedItems) {
-      final newPath = p.join(exportRootDir.path, p.basename(entity.path));
       if (entity is File) {
+        // 2. Le quitamos el cifrado al nombre (Ej: foto0nq4.vtx -> foto.mp4)
+        final cleanName = _getDeobfuscatedName(p.basename(entity.path));
+        
+        // 3. Nos aseguramos de no sobrescribir nada si ya existe un archivo igual
+        final newPath = await _getUniquePath(exportRootDir, cleanName);
         await entity.copy(newPath);
       } else if (entity is Directory) {
-        await _copyDirectory(entity, Directory(newPath));
+        // Si es una carpeta, delegamos la copia a la función recursiva
+        final newDirPath = await _getUniquePath(exportRootDir, p.basename(entity.path));
+        await _copyDirectory(entity, Directory(newDirPath));
       }
     }
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content:
-              Text('${_selectedItems.length} elemento(s) exportado(s) con éxito.')));
+              Text('${_selectedItems.length} elemento(s) exportado(s) con éxito a ${exportRootDir.path}.')));
     }
     setState(() => _selectedItems.clear());
+  }
+
+  Future<void> _handleSingleExport(File file) async {
+    // Abrimos el selector de carpetas
+    String? selectedDirectory = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: 'Seleccionar carpeta de exportación',
+    );
+
+    if (selectedDirectory == null) return;
+
+    final exportRootDir = Directory(selectedDirectory);
+    
+    // Usamos las funciones de descifrado que ya tienes para limpiar el nombre
+    final cleanName = _getDeobfuscatedName(p.basename(file.path));
+    final newPath = await _getUniquePath(exportRootDir, cleanName);
+
+    try {
+      await file.copy(newPath);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Archivo exportado con éxito a ${exportRootDir.path}.')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Error al exportar: $e')));
+      }
+    }
   }
 
   Future<void> _restoreAllAndClear() async {
@@ -1710,10 +1740,14 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   Future<void> _copyDirectory(Directory source, Directory destination) async {
     await destination.create(recursive: true);
     await for (final entity in source.list()) {
-      final newPath = p.join(destination.path, p.basename(entity.path));
       if (entity is File) {
+        // Desencriptamos los archivos que están dentro de las carpetas
+        final cleanName = _getDeobfuscatedName(p.basename(entity.path));
+        final newPath = await _getUniquePath(destination, cleanName);
         await entity.copy(newPath);
       } else if (entity is Directory) {
+        // Las carpetas no están cifradas, mantienen su nombre normal
+        final newPath = p.join(destination.path, p.basename(entity.path));
         await _copyDirectory(entity, Directory(newPath));
       }
     }
@@ -1907,15 +1941,19 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
 class FullScreenImageViewer extends StatefulWidget {
   final List<File> imageFiles;
   final int initialIndex;
-  final Future<void> Function(File file) restoreCallback;
+  final Future<void> Function(File file) exportCallback;
   final VoidCallback onClose;
+  final MetadataService metadataService;
+  final String vaultRootPath;
 
   const FullScreenImageViewer({
     super.key,
     required this.imageFiles,
     required this.initialIndex,
-    required this.restoreCallback,
+    required this.exportCallback,
     required this.onClose,
+    required this.metadataService,
+    required this.vaultRootPath,
   });
 
   @override
@@ -1933,27 +1971,9 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
     _pageController = PageController(initialPage: widget.initialIndex);
   }
 
-  Future<void> _restoreCurrentImage() async {
-    bool confirm = await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Restaurar Imagen'),
-            content: const Text(
-                '¿Deseas mover esta imagen de vuelta a la carpeta Vórtice?'),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.of(context).pop(false),
-                  child: const Text('Cancelar')),
-              TextButton(
-                  onPressed: () => Navigator.of(context).pop(true),
-                  child: const Text('Aceptar')),
-            ],
-          ),
-        ) ??
-        false;
-    if (!confirm || !mounted) return;
+  Future<void> _exportCurrentImage() async {
     final currentFile = widget.imageFiles[_currentIndex];
-    await widget.restoreCallback(currentFile);
+    await widget.exportCallback(currentFile);
     widget.onClose();
   }
 
@@ -1965,6 +1985,11 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
 
   @override
   Widget build(BuildContext context) {
+    final currentFile = widget.imageFiles[_currentIndex];
+    // Calculamos el ID relativo para poder consultar la base de datos
+    final imageId = p.relative(currentFile.path, from: widget.vaultRootPath);
+    final currentRating = widget.metadataService.getMetadataForImage(imageId).rating;
+
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -1975,10 +2000,52 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
           onPressed: widget.onClose,
         ),
         actions: [
+          // 1. Botón de Etiquetas
           IconButton(
-            icon: const Icon(Icons.restore, color: Colors.white),
-            tooltip: 'Restaurar a la carpeta Vórtice',
-            onPressed: _restoreCurrentImage,
+            icon: const Icon(Icons.label_outline, color: Colors.white),
+            tooltip: 'Etiquetas',
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (context) => TagEditorDialog(
+                  imageIds: [imageId],
+                  metadataService: widget.metadataService,
+                ),
+              ).then((_) => setState(() {})); // Refresca la vista si cambian las etiquetas
+            },
+          ),
+          
+          // 2. Menú de Calificación (Estrellas)
+          PopupMenuButton<int>(
+            icon: currentRating > 0 
+                ? const Icon(Icons.star, color: Colors.amber)
+                : const Icon(Icons.star_outline, color: Colors.white),
+            tooltip: 'Calificación',
+            color: const Color(0xFF424242),
+            itemBuilder: (context) => List.generate(6, (index) {
+              return PopupMenuItem(
+                value: index,
+                child: Row(
+                  children: [
+                    if (index == 0)
+                      const Text("Sin calificar", style: TextStyle(color: Colors.white))
+                    else
+                      RatingStarsDisplay(rating: index, iconSize: 20),
+                  ],
+                ),
+              );
+            }),
+            onSelected: (newRating) {
+              widget.metadataService.setRatingForImage(imageId, newRating);
+              setState(() {}); // Actualiza el icono de estrella
+            },
+          ),
+
+          // 3. Botón de Exportar
+          IconButton(
+            icon: const Icon(Icons.download_for_offline_outlined, color: Colors.white),
+            tooltip: 'Exportar',
+            onPressed: _exportCurrentImage,
           ),
         ],
       ),
