@@ -21,8 +21,8 @@ class MetadataService {
   Future<void> initialize() async {
     if (_isInitialized) return;
 
-    final appDir = await getApplicationDocumentsDirectory();
-    final dbPath = p.join(appDir.path, 'vault_metadata.db');
+    final supportDir = await getApplicationSupportDirectory();
+    final dbPath = p.join(supportDir.path, 'vault_metadata.db');
 
     _db = await openDatabase(
       dbPath,
@@ -107,5 +107,49 @@ class MetadataService {
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+  }
+
+  Future<void> updateImagePath(String oldId, String newId) async {
+    // 1. Si es un archivo individual que se movió
+    if (_imageData.containsKey(oldId)) {
+      final metadata = _imageData.remove(oldId)!;
+      _imageData[newId] = metadata;
+      await _db.update(
+        'metadata',
+        {'image_id': newId},
+        where: 'image_id = ?',
+        whereArgs: [oldId],
+      );
+    }
+    
+    // 2. Si es una CARPETA que se movió, debemos actualizar todo su contenido
+    final prefix = oldId + p.separator;
+    final keysToUpdate = _imageData.keys.where((k) => k.startsWith(prefix)).toList();
+    
+    for (final key in keysToUpdate) {
+      // Reemplazamos la parte vieja de la ruta por la nueva
+      final newKey = newId + key.substring(oldId.length);
+      final metadata = _imageData.remove(key)!;
+      _imageData[newKey] = metadata;
+      await _db.update(
+        'metadata',
+        {'image_id': newKey},
+        where: 'image_id = ?',
+        whereArgs: [key],
+      );
+    }
+  }
+
+  // Bonus: Borrar la metadata cuando eliminas la imagen para no dejar datos fantasma
+  Future<void> deleteMetadata(String imageId) async {
+    _imageData.remove(imageId);
+    await _db.delete('metadata', where: 'image_id = ?', whereArgs: [imageId]);
+    
+    final prefix = imageId + p.separator;
+    final keysToDelete = _imageData.keys.where((k) => k.startsWith(prefix)).toList();
+    for (final key in keysToDelete) {
+      _imageData.remove(key);
+      await _db.delete('metadata', where: 'image_id = ?', whereArgs: [key]);
+    }
   }
 }

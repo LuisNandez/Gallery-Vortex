@@ -52,7 +52,7 @@ void main(List<String> args) async {
   WindowOptions windowOptions = const WindowOptions(
     size: Size(800, 600),
     center: true,
-    backgroundColor: Colors.transparent,
+    backgroundColor: Colors.black,
     skipTaskbar: false,
     titleBarStyle: TitleBarStyle.normal,
   );
@@ -335,8 +335,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   void _initializeAppServices() async {
     await windowManager.setPreventClose(true);
-    final appDir = await getApplicationDocumentsDirectory();
-    _vaultRootDir = Directory(p.join(appDir.path, 'vault'));
+    final supportDir = await getApplicationSupportDirectory();
+    _vaultRootDir = Directory(p.join(supportDir.path, 'vault'));
     _currentVaultDir = widget.currentDirectory ?? _vaultRootDir;
     
     // Inicializa todos los servicios
@@ -461,8 +461,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     await _loadVaultContents();
   }
 
-  Future<void> _loadVaultContents() async {
-    setState(() => _isLoading = true);
+  Future<void> _loadVaultContents({bool quiet = false}) async {
+    // Solo mostramos el indicador si NO es una recarga silenciosa
+    if (!quiet) {
+      setState(() => _isLoading = true);
+    }
+
     if (!await _currentVaultDir.exists()) {
       await _currentVaultDir.create(recursive: true);
     }
@@ -472,12 +476,14 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       if (a is File && b is Directory) return 1;
       return a.path.compareTo(b.path);
     });
+
     setState(() {
       _vaultContents = contents;
       _itemKeys.clear();
-      _isLoading = false;
+      _isLoading = false; // Siempre lo apagamos al terminar por seguridad
       _shiftSelectionAnchorIndex = null;
     });
+    
     _thumbnailService.bulkGenerate(contents);
   }
 
@@ -581,9 +587,13 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     if (meetsFormat) {
       newName = originalFileName;
     } else {
+      // Generamos el timestamp y mantenemos la extensión original
       final String extension = p.extension(imageFile.path);
       newName = '${DateTime.now().millisecondsSinceEpoch}$extension';
     }
+    
+    // Aplicamos nuestra ofuscación limpia: 12345.jpg -> 12345_jpg.vtx
+    newName = _obfuscateName(newName);
     
     final newPathInVault = await _getUniquePath(_vaultRootDir, newName);
 
@@ -592,7 +602,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       if (p.equals(_currentVaultDir.path, _vaultRootDir.path)) {
         // NUEVO: Solo recargamos la lista gráfica si NO estamos pausados
         if (reloadUI && !_isPaused) {
-          await _loadVaultContents();
+          await _loadVaultContents(quiet: true);
         }
       }
     } catch (e) {
@@ -628,16 +638,26 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     }
   }
 
-  Future<void> _moveEntity(
-      FileSystemEntity entity, Directory destination) async {
+  Future<void> _moveEntity(FileSystemEntity entity, Directory destination) async {
     try {
       final entityName = p.basename(entity.path);
       final newPath = await _getUniquePath(destination, entityName);
+      
+      // --- INICIO DE LA MODIFICACIÓN ---
+      // Calculamos las rutas relativas (IDs) ANTES de mover el archivo
+      final oldId = p.relative(entity.path, from: _vaultRootDir.path);
+      final newId = p.relative(newPath, from: _vaultRootDir.path);
+
       if (entity is File) {
         await _moveFileRobustly(entity, newPath);
       } else {
         await entity.rename(newPath);
       }
+
+      // Le avisamos a la base de datos que la ruta cambió para que mueva las etiquetas
+      await _metadataService.updateImagePath(oldId, newId);
+      // --- FIN DE LA MODIFICACIÓN ---
+
     } catch (e) {
       debugPrint("Error moving entity: $e");
       if (mounted) {
@@ -681,7 +701,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       _VaultExplorerScreenState._isCutOperation = false;
     });
     
-    await _loadVaultContents();
+    await _loadVaultContents(quiet: true);
   }
 
   void _showContextMenu(BuildContext context, Offset position) {
@@ -1045,6 +1065,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         lowercasedPath.endsWith('.webp');
   }
 
+  
+
   Future<bool?> _showConfirmationDialog(
       {required String title, required String content}) {
     return showDialog<bool>(
@@ -1091,7 +1113,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                     if (!await newDir.exists()) {
                       await newDir.create();
                       if (mounted) Navigator.of(context).pop();
-                      await _loadVaultContents();
+                      await _loadVaultContents(quiet: true);
                     }
                   }
                 },
@@ -1373,6 +1395,30 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   Widget _buildDragFeedback(List<FileSystemEntity> items) {
     final firstItem = items.first;
+    
+    // 1. Determinamos qué mostrar en la vista previa del arrastre
+    Widget previewWidget;
+    if (firstItem is File) {
+      final ext = p.extension(firstItem.path).toLowerCase();
+      final isVideo = ['.mp4', '.mov', '.avi', '.mkv'].contains(ext);
+      
+      if (isVideo) {
+        // Si es video, mostramos un ícono representativo
+        previewWidget = Container(
+          color: Colors.grey.shade900,
+          child: const Center(
+            child: Icon(Icons.movie_creation_outlined, size: 50, color: Colors.white70),
+          ),
+        );
+      } else {
+        // Si es imagen, la dibujamos
+        previewWidget = Image.file(firstItem, fit: BoxFit.cover);
+      }
+    } else {
+      // Si es carpeta
+      previewWidget = const Icon(Icons.folder, size: 100, color: Colors.amber);
+    }
+
     return Material(
       color: Colors.transparent,
       child: Transform.translate(
@@ -1382,12 +1428,10 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             SizedBox(
               width: 100,
               height: 100,
-              child: firstItem is File
-                  ? ClipRRect(
-                      borderRadius: BorderRadius.circular(8.0),
-                      child: Image.file(firstItem, fit: BoxFit.cover),
-                    )
-                  : const Icon(Icons.folder, size: 100, color: Colors.amber),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8.0),
+                child: previewWidget,
+              ),
             ),
             if (items.length > 1)
               Positioned(
@@ -1475,8 +1519,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           await _moveEntity(entity, directory);
         }
         setState(() => _selectedItems.clear());
-        await _loadVaultContents();
-      },
+        await _loadVaultContents(quiet: true);
+    },
     );
   }
 
@@ -1524,12 +1568,15 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
     for (final entity in _selectedItems) {
       if (entity.existsSync()) {
+        
+        // NUEVO: Borramos su rastro en la base de datos
+        final idToDelete = p.relative(entity.path, from: _vaultRootDir.path);
+        await _metadataService.deleteMetadata(idToDelete);
+
         if (entity is File) {
           await _thumbnailService.clearThumbnail(p.basename(entity.path));
           await entity.delete();
         } else if (entity is Directory) {
-          // Note: Recursively clearing thumbnails for directories is more complex
-          // and not implemented here for brevity.
           await entity.delete(recursive: true);
         }
       }
@@ -1538,7 +1585,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     setState(() {
       _selectedItems.clear();
     });
-    await _loadVaultContents();
+    await _loadVaultContents(quiet: true);
   }
 
   Future<void> _handleExport() async {
@@ -1760,7 +1807,9 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
   @override
   Widget build(BuildContext context) {
     final rating = widget.metadataService.getMetadataForImage(widget.imageId).rating;
-    final bool isVideo = ['.mp4', '.mov', '.avi', '.mkv'].contains(p.extension(widget.imageFile.path).toLowerCase());
+    
+    // 1. AHORA SÍ usamos la función que descifra el .vtx para saber si es video
+    final bool isVideo = _isVideo(widget.imageFile.path);
 
     return GestureDetector(
       onTap: widget.onTap,
@@ -1777,9 +1826,7 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
           ),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(6.0),
-            // Ahora, en lugar de un FutureBuilder, comprobamos nuestro estado
             child: _thumbFile == null
-                // 1. Si la miniatura aún no ha cargado, mostramos el indicador
                 ? Container(
                     color: Colors.grey.shade800,
                     child: const Center(
@@ -1789,30 +1836,36 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
                           child: CircularProgressIndicator(strokeWidth: 2.0)),
                     ),
                   )
-                // 2. Si ya cargó, construimos la imagen directamente
                 : Stack(
                     fit: StackFit.expand,
                     children: [
                       Image.file(
                         _thumbFile!,
                         fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) {
+                          return Container(
+                            color: Colors.grey.shade900,
+                            child: const Center(
+                              child: Icon(Icons.broken_image, color: Colors.white54, size: 40),
+                            ),
+                          );
+                        },
                         gaplessPlayback: true,
                       ),
-                      if (isVideo)
-                      Center(
-                        child: Container(
-                          padding: const EdgeInsets.all(4),
-                          decoration: const BoxDecoration(
-                            color: Colors.black26, 
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(
-                            Icons.play_arrow, 
+                      
+                      // 2. CAPA DEL BOTÓN DE PLAY (Solo si es video)
+                      if (isVideo) ...[
+                        Container(color: Colors.black26), // Oscurece un poco la miniatura
+                        const Center(
+                          child: Icon(
+                            Icons.play_circle_fill,
                             color: Colors.white, 
-                            size: 40,
+                            size: 48,
                           ),
                         ),
-                      ),
+                      ],
+
+                      // 3. Sombreado inferior
                       Positioned(
                         bottom: 0,
                         left: 0,
@@ -1831,6 +1884,8 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
                           ),
                         ),
                       ),
+                      
+                      // 4. Estrellas
                       if (rating > 0)
                         Positioned(
                           bottom: 4,
@@ -1913,7 +1968,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        backgroundColor: Colors.transparent,
+        backgroundColor: Colors.black,
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.close, color: Colors.white),
@@ -1941,9 +1996,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
             itemBuilder: (context, index) {
               final imageFile = widget.imageFiles[index];
               
-              // Detectamos si es un video por la extensión
-              final String extension = p.extension(imageFile.path).toLowerCase();
-              final bool isVideo = ['.mp4', '.mov', '.avi', '.mkv'].contains(extension);
+              final bool isVideo = _isVideo(imageFile.path);
               if (isVideo) {
                 // Retornamos el video SIN Hero para evitar el congelamiento
                 return VideoViewerWidget(videoFile: imageFile);
@@ -2370,3 +2423,87 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 }
+
+// --- UTILIDADES DE OFUSCACIÓN (CIFRADO PERSONALIZADO) ---
+  
+  // Cifra la extensión (Ej: .png -> 0qoh)
+  String _cipherExtension(String ext) {
+    String result = '';
+    for (int i = 0; i < ext.length; i++) {
+      String char = ext[i].toLowerCase();
+      if (char == '.') {
+        result += '0';
+      } else if (RegExp(r'[a-z]').hasMatch(char)) {
+        int charCode = char.codeUnitAt(0);
+        int nextCode = charCode == 122 ? 97 : charCode + 1; // z -> a
+        result += String.fromCharCode(nextCode);
+      } else {
+        result += char; // Mantiene números como el 4
+      }
+    }
+    return result;
+  }
+
+  // Descifra la extensión (Ej: 0qoh -> .png)
+  String _decipherExtension(String ciphered) {
+    String result = '';
+    for (int i = 0; i < ciphered.length; i++) {
+      String char = ciphered[i].toLowerCase();
+      if (char == '0') {
+        result += '.';
+      } else if (RegExp(r'[a-z]').hasMatch(char)) {
+        int charCode = char.codeUnitAt(0);
+        int prevCode = charCode == 97 ? 122 : charCode - 1; // a -> z
+        result += String.fromCharCode(prevCode);
+      } else {
+        result += char; // Mantiene números como el 4
+      }
+    }
+    return result;
+  }
+
+  // Convierte: "imagen.mp4" -> "imagen0nq4.vtx"
+  String _obfuscateName(String originalName) {
+    if (originalName.toLowerCase().endsWith('.vtx')) return originalName;
+
+    final ext = p.extension(originalName); // Ej: .mp4
+    final base = p.basenameWithoutExtension(originalName); // Ej: imagen
+    final cipheredExt = _cipherExtension(ext); // Ej: 0nq4
+
+    return '$base$cipheredExt.vtx';
+  }
+
+  // Convierte: "imagen0nq4.vtx" -> "imagen.mp4"
+  String _getDeobfuscatedName(String filename) {
+    if (filename.toLowerCase().endsWith('.vtx')) {
+      final base = p.basenameWithoutExtension(filename); // Ej: imagen0nq4
+      final lastZero = base.lastIndexOf('0'); // Buscamos dónde empieza el cifrado
+      
+      if (lastZero != -1) {
+        final realBase = base.substring(0, lastZero); // imagen
+        final realExt = _decipherExtension(base.substring(lastZero)); // .mp4
+        return '$realBase$realExt';
+      }
+      return base;
+    }
+    return filename;
+  }
+
+  // Obtiene la extensión real oculta: ".mp4"
+  String _getRealExtension(String filename) {
+    if (filename.toLowerCase().endsWith('.vtx')) {
+      final base = p.basenameWithoutExtension(filename);
+      final lastZero = base.lastIndexOf('0');
+      
+      if (lastZero != -1) {
+        return _decipherExtension(base.substring(lastZero));
+      }
+    }
+    return p.extension(filename).toLowerCase();
+  }
+
+  // Detecta videos leyendo la extensión real descifrada
+  bool _isVideo(String filePath) {
+    final ext = _getRealExtension(filePath);
+    return ['.mp4', '.mov', '.avi', '.mkv'].contains(ext);
+  }

@@ -75,12 +75,17 @@ class ThumbnailService {
 
   Future<void> initialize() async {
     if (_isInitialized) return;
-    final appDir = await getApplicationDocumentsDirectory();
-    _thumbnailDir = Directory(p.join(appDir.path, 'thumbnails'));
+    final supportDir = await getApplicationSupportDirectory();
+    _thumbnailDir = Directory(p.join(supportDir.path, 'thumbnails'));
     if (!await _thumbnailDir!.exists()) {
       await _thumbnailDir!.create(recursive: true);
     }
     _isInitialized = true;
+  }
+
+  String _getThumbName(String originalPath) {
+    final baseName = p.basenameWithoutExtension(originalPath);
+    return '$baseName.thumb.vtx';
   }
 
   Future<void> bulkGenerate(List<FileSystemEntity> files) async {
@@ -89,8 +94,7 @@ class ThumbnailService {
 
     for (var entity in files) {
       if (entity is File && _isSupportedImageOrVideo(entity.path)) {
-        final imageName = p.basename(entity.path);
-        final thumbPath = p.join(_thumbnailDir!.path, '$imageName.thumb.jpg');
+        final thumbPath = p.join(_thumbnailDir!.path, _getThumbName(entity.path));
         
         if (!await File(thumbPath).exists()) {
           await getThumbnail(entity);
@@ -101,8 +105,36 @@ class ThumbnailService {
     _isProcessingBatch = false;
   }
 
+  String _decipherExtension(String ciphered) {
+    String result = '';
+    for (int i = 0; i < ciphered.length; i++) {
+      String char = ciphered[i].toLowerCase();
+      if (char == '0') {
+        result += '.';
+      } else if (RegExp(r'[a-z]').hasMatch(char)) {
+        int charCode = char.codeUnitAt(0);
+        int prevCode = charCode == 97 ? 122 : charCode - 1; 
+        result += String.fromCharCode(prevCode);
+      } else {
+        result += char; 
+      }
+    }
+    return result;
+  }
+
+  String _getRealExtension(String path) {
+    if (path.toLowerCase().endsWith('.vtx')) {
+      final base = p.basenameWithoutExtension(path);
+      final lastZero = base.lastIndexOf('0');
+      if (lastZero != -1) {
+        return _decipherExtension(base.substring(lastZero));
+      }
+    }
+    return p.extension(path).toLowerCase();
+  }
+
   bool _isSupportedImageOrVideo(String path) {
-    final ext = p.extension(path).toLowerCase();
+    final ext = _getRealExtension(path);
     return ['.jpg', '.jpeg', '.png', '.webp', '.mp4', '.mov', '.avi'].contains(ext);
   }
 
@@ -122,8 +154,7 @@ class ThumbnailService {
       }
     }
 
-    final imageName = p.basename(originalPath);
-    final thumbPath = p.join(_thumbnailDir!.path, '$imageName.thumb.jpg');
+    final thumbPath = p.join(_thumbnailDir!.path, _getThumbName(originalPath));
     final thumbFile = File(thumbPath);
 
     // 2. Intentamos leer del Disco Duro
@@ -134,23 +165,42 @@ class ThumbnailService {
 
     // 3. Si no existe, lo generamos
     if (_isVideoButton(originalPath)) {
+      final realExt = _getRealExtension(originalPath); // Averiguamos qué es (ej. .mp4)
+      final tempPath = '$originalPath$realExt'; // ej: archivo0nq4.vtx.mp4
+      final originalFile = File(originalPath);
+      bool success = false;
+
       try {
-        final success = await plugin.getVideoThumbnail(
-          srcFile: originalPath,
+        // TRUCO NINJA: Le ponemos la extensión real temporalmente para engañar a Windows
+        if (await originalFile.exists()) {
+          await originalFile.rename(tempPath);
+        }
+
+        success = await plugin.getVideoThumbnail(
+          srcFile: tempPath, // Usamos la ruta temporal
           destFile: thumbPath,
           width: 256,
           height: 256,
           format: 'jpeg',
           quality: 75,
         );
-
-        if (success) {
-          final generatedThumb = File(thumbPath);
-          _addToCache(originalPath, generatedThumb);
-          return generatedThumb;
-        }
       } catch (e) {
         debugPrint("Error nativo en Windows: $e");
+      } finally {
+        // SUPER IMPORTANTE: Siempre devolvemos el archivo a su estado seguro (.vtx)
+        // El bloque 'finally' se ejecuta SIEMPRE, incluso si la app arroja un error arriba.
+        final tempFile = File(tempPath);
+        if (await tempFile.exists()) {
+          await tempFile.rename(originalPath);
+        }
+      }
+
+      if (success) {
+        final generatedThumb = File(thumbPath);
+        _addToCache(originalPath, generatedThumb);
+        return generatedThumb;
+      } else {
+        return originalImage; // Fallback de nuestro Airbag
       }
     } else {
       final request = _ThumbnailRequest(
@@ -169,7 +219,7 @@ class ThumbnailService {
   }
 
   bool _isVideoButton(String path) {
-    final ext = p.extension(path).toLowerCase();
+    final ext = _getRealExtension(path);
     return ['.mp4', '.mov', '.avi', '.mkv'].contains(ext);
   }
 
