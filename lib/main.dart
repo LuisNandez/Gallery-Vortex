@@ -14,6 +14,7 @@ import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'video_player_widget.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 // Imports de los nuevos archivos
 import 'metadata_service.dart';
@@ -33,6 +34,11 @@ enum CloseAction { exit, minimize }
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
+
+  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  }
   
   await windowManager.ensureInitialized();
 
@@ -114,7 +120,7 @@ class AuthWrapper extends StatefulWidget {
   State<AuthWrapper> createState() => _AuthWrapperState();
 }
 
-class _AuthWrapperState extends State<AuthWrapper> with WindowListener {
+class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayListener {
   bool _isAuthenticated = false;
   bool _isWindowVisible = true;
 
@@ -124,12 +130,53 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener {
   void initState() {
     super.initState();
     windowManager.addListener(this);
+    trayManager.addListener(this);
+    _initTray();
   }
   
   @override
   void dispose() {
     windowManager.removeListener(this);
+    trayManager.removeListener(this);
     super.dispose();
+  }
+
+  Future<void> _initTray() async {
+    await trayManager.setIcon(
+      Platform.isWindows ? 'assets/app_icon.ico' : 'assets/app_icon.png',
+    );
+    Menu menu = Menu(items: [
+      MenuItem(key: 'show_window', label: 'Mostrar Aplicación'),
+      MenuItem.separator(),
+      MenuItem(key: 'exit_application', label: 'Cerrar Aplicación'),
+    ]);
+    await trayManager.setContextMenu(menu);
+    await trayManager.setToolTip('Galería Vórtice');
+  }
+
+  @override
+  void onTrayIconMouseDown() {
+    windowManager.show();
+    setState(() {
+      _isWindowVisible = true;
+      _isAuthenticated = false;
+    });
+  }
+
+  @override
+  void onTrayIconRightMouseDown() => trayManager.popUpContextMenu();
+
+  @override
+  void onTrayMenuItemClick(MenuItem menuItem) {
+    if (menuItem.key == 'show_window') {
+      windowManager.show();
+      setState(() {
+        _isWindowVisible = true;
+        _isAuthenticated = false;
+      });
+    } else if (menuItem.key == 'exit_application') {
+      windowManager.destroy();
+    }
   }
 
   // --- NUEVOS LISTENERS DE VENTANA ---
@@ -154,35 +201,39 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
-    // Si la ventana no está visible, mostramos el widget ligero.
-    if (!_isWindowVisible) {
-      return const BackgroundServiceScreen();
-    }
-
-    // Si está visible, usamos la lógica de autenticación de siempre.
-    if (!_isAuthenticated) {
-      return PinAuthScreen(
-        onAuthenticated: () {
-          setState(() {
-            _isAuthenticated = true;
-          });
-        },
-        setAuthenticated: (value) {
-          setState(() {
-            _isAuthenticated = value;
-          });
-        },
-      );
-    }
-
-    // Pasamos la key a VaultExplorerScreen para poder comunicarnos con él.
-    return VaultExplorerScreen(
-      key: _vaultExplorerKey,
-      setAuthenticated: (value) {
-        setState(() {
-          _isAuthenticated = value;
-        });
-      },
+    return Stack(
+      children: [
+        // 1. El explorador SIEMPRE está vivo para que el Watcher funcione,
+        // pero lo ocultamos (Offstage) si no está visible o no hay PIN ingresado.
+        Offstage(
+          offstage: !_isWindowVisible || !_isAuthenticated,
+          child: VaultExplorerScreen(
+            key: _vaultExplorerKey,
+            setAuthenticated: (value) {
+              setState(() {
+                _isAuthenticated = value;
+              });
+            },
+          ),
+        ),
+        
+        // 2. Pantallas de estado superpuestas (Bloqueo o Background)
+        if (!_isWindowVisible)
+          const BackgroundServiceScreen()
+        else if (!_isAuthenticated)
+          PinAuthScreen(
+            onAuthenticated: () {
+              setState(() {
+                _isAuthenticated = true;
+              });
+            },
+            setAuthenticated: (value) {
+              setState(() {
+                _isAuthenticated = value;
+              });
+            },
+          ),
+      ],
     );
   }
 }
@@ -202,9 +253,10 @@ class VaultExplorerScreen extends StatefulWidget {
 }
 
 class _VaultExplorerScreenState extends State<VaultExplorerScreen>
-    with WindowListener, TrayListener {
+    with WindowListener{
   List<FileSystemEntity> _vaultContents = [];
   bool _isLoading = true;
+  bool _isPaused = false;
   String? _vortexPath;
   StreamSubscription<WatchEvent>? _watcherSubscription;
   late Directory _currentVaultDir;
@@ -253,13 +305,13 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   void initState() {
     super.initState();
     windowManager.addListener(this);
-    trayManager.addListener(this);
     _initializeAppServices();
   }
 
   void pause() {
     print("VaultExplorer pausado. Liberando recursos de UI...");
     setState(() {
+      _isPaused = true;
       // Vaciamos las listas grandes para liberar RAM.
       _vaultContents.clear();
       _itemKeys.clear();
@@ -272,8 +324,11 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   void resume() {
     print("VaultExplorer reanudado. Recargando contenido...");
-    // Si la vista no está cargada, la cargamos.
-    if (_vaultContents.isEmpty && _vortexPath != null) {
+    setState(() {
+      _isPaused = false; // <-- Desactivamos la pausa
+    });
+    // Volvemos a cargar las imágenes al abrir la ventana
+    if (_vortexPath != null) {
       _loadVaultContents();
     }
   }
@@ -289,7 +344,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     await _thumbnailService.initialize();
 
     _initializeState();
-    _initTray();
+    //_initTray();
   }
 
   /// Mueve una carpeta entera desde el Vórtice a la bóveda.
@@ -326,7 +381,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     return true;
   }
 
-  Future<void> _initTray() async {
+  /*Future<void> _initTray() async {
     await trayManager.setIcon(
       Platform.isWindows ? 'assets/app_icon.ico' : 'assets/app_icon.png',
     );
@@ -337,12 +392,11 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     ]);
     await trayManager.setContextMenu(menu);
     await trayManager.setToolTip('Galería Vórtice');
-  }
+  }*/
 
   @override
   void dispose() {
     windowManager.removeListener(this);
-    trayManager.removeListener(this);
     _watcherSubscription?.cancel();
     _folderNameController.dispose();
     _doubleTapTimer?.cancel();
@@ -367,7 +421,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     // --- FIN DE LA MODIFICACIÓN ---
   }
 
-  @override
+  /*@override
   void onTrayIconMouseDown() {
     windowManager.show();
     widget.setAuthenticated(false);
@@ -384,7 +438,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     } else if (menuItem.key == 'exit_application') {
       windowManager.destroy();
     }
-  }
+  }*/
 
   // --- Core Business Logic ---
   Future<void> _initializeState() async {
@@ -427,13 +481,64 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _thumbnailService.bulkGenerate(contents);
   }
 
+  Future<bool> _waitUntilFileIsReady(File file) async {
+    int lastSize = -1;
+    int stableCount = 0;
+
+    // Hacemos un bucle hasta que el archivo esté completamente listo.
+    // Esto soporta descargas que pueden tardar horas.
+    while (true) {
+      try {
+        if (!await file.exists()) {
+          return false; // El archivo fue borrado o la descarga se canceló
+        }
+
+        int currentSize = await file.length();
+
+        if (currentSize == lastSize && currentSize > 0) {
+          stableCount++;
+          // Exigimos 3 comprobaciones idénticas seguidas (1.5 segundos de estabilidad)
+          if (stableCount >= 3) {
+            // Verificación final: Intentamos abrir el archivo sin destruirlo.
+            // Si Chrome/Windows aún lo está escribiendo, esto lanzará una excepción.
+            RandomAccessFile? raf;
+            try {
+              raf = await file.open(mode: FileMode.append);
+              await raf.close();
+              return true; // ¡El archivo está 100% listo para ser movido!
+            } catch (e) {
+              stableCount = 0; // Aún tiene un candado de escritura, seguimos esperando
+            }
+          }
+        } else {
+          stableCount = 0; // El tamaño cambió, sigue copiándose
+        }
+        lastSize = currentSize;
+      } catch (e) {
+        // Ignoramos errores temporales si el archivo está fuertemente bloqueado
+        stableCount = 0;
+      }
+
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
+  }
+
   void _startWatcher(String path) {
     _watcherSubscription?.cancel();
     final watcher = DirectoryWatcher(path);
-    _watcherSubscription = watcher.events.listen((event) {
+    
+    _watcherSubscription = watcher.events.listen((event) async {
+      // Cuando detectamos que "aparece" un archivo nuevo...
       if (event.type == ChangeType.ADD && _isSupportedFile(event.path)) {
-        Future.delayed(
-            const Duration(seconds: 1), () => _absorbImage(File(event.path)));
+        final file = File(event.path);
+        
+        // 1. Esperamos pacientemente a que termine de copiarse/descargarse
+        final isReady = await _waitUntilFileIsReady(file);
+        
+        // 2. Solo cuando está listo (y si no cerramos la app mientras tanto), lo absorbemos
+        if (isReady && mounted) {
+          await _absorbImage(file);
+        }
       }
     });
   }
@@ -485,7 +590,10 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     try {
       await _moveFileRobustly(imageFile, newPathInVault);
       if (p.equals(_currentVaultDir.path, _vaultRootDir.path)) {
-        if (reloadUI) await _loadVaultContents();
+        // NUEVO: Solo recargamos la lista gráfica si NO estamos pausados
+        if (reloadUI && !_isPaused) {
+          await _loadVaultContents();
+        }
       }
     } catch (e) {
       debugPrint("Error al absorber ${imageFile.path}: $e");
@@ -615,12 +723,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           title: 'Etiquetas',
           onTap: () {
             _hideContextMenu();
-            final selectedImages = _selectedItems.whereType<File>().map((f) => p.basename(f.path)).toList();
-            
+            final selectedImageIds = _selectedItems.whereType<File>().map((f) => p.relative(f.path, from: _vaultRootDir.path)).toList();
+
             showDialog(
               context: context,
               builder: (context) => TagEditorDialog(
-                imageNames: selectedImages,
+                imageIds: selectedImageIds,
                 metadataService: _metadataService,
               ),
             );
@@ -718,13 +826,14 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         );
       }),
     ).then((newRating) {
-      if (newRating != null) {
-        for (final entity in _selectedItems.whereType<File>()) {
-          _metadataService.setRatingForImage(p.basename(entity.path), newRating);
-        }
-        setState(() {});
-      }
-    });
+  if (newRating != null) {
+    for (final entity in _selectedItems.whereType<File>()) {
+      final imageId = p.relative(entity.path, from: _vaultRootDir.path); // <-- Usamos el ID
+      _metadataService.setRatingForImage(imageId, newRating);
+    }
+    setState(() {});
+  }
+});
   }
 
   void _hideContextMenu() {
@@ -766,8 +875,13 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         ).then((_) => _loadVaultContents());
       } else if (entity is File) {
         final imageFiles = _vaultContents.whereType<File>().toList();
-        final initialIndex = imageFiles.indexOf(entity);
-        _showFullScreenViewer(imageFiles, initialIndex);
+        int initialIndex = imageFiles.indexWhere((f) => p.equals(f.path, entity.path));
+        if (initialIndex == -1) {
+          initialIndex = 0; 
+        }
+        if (imageFiles.isNotEmpty) {
+          _showFullScreenViewer(imageFiles, initialIndex);
+        }
       }
     }
   }
@@ -1367,25 +1481,29 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
 
   Widget _buildImageItem(File imageFile, int index) {
-  final isSelected = _selectedItems.contains(imageFile);
+    final isSelected = _selectedItems.contains(imageFile);
 
-  // Simplemente devolvemos nuestro nuevo widget y le pasamos los datos necesarios
-  return ImageItemWidget(
-    imageFile: imageFile,
-    isSelected: isSelected,
-    extent: _thumbnailExtent,
-    metadataService: _metadataService,
-    thumbnailService: _thumbnailService,
-    onTap: () => _handleItemTap(imageFile, index),
-    onSecondaryTapUp: (details) {
-      _hideContextMenu();
-      if (!_selectedItems.contains(imageFile)) {
-        setState(() => _selectedItems = {imageFile});
-      }
-      _showContextMenu(context, details.globalPosition);
-    },
-  );
-}
+    // NUEVO: Calculamos la ruta relativa para usarla como ID único
+    final imageId = p.relative(imageFile.path, from: _vaultRootDir.path);
+
+    // Simplemente devolvemos nuestro nuevo widget y le pasamos los datos necesarios
+    return ImageItemWidget(
+      imageFile: imageFile,
+      imageId: imageId, // <-- AQUÍ ESTÁ EL PARÁMETRO QUE FALTABA
+      isSelected: isSelected,
+      extent: _thumbnailExtent,
+      metadataService: _metadataService,
+      thumbnailService: _thumbnailService,
+      onTap: () => _handleItemTap(imageFile, index),
+      onSecondaryTapUp: (details) {
+        _hideContextMenu();
+        if (!_selectedItems.contains(imageFile)) {
+          setState(() => _selectedItems = {imageFile});
+        }
+        _showContextMenu(context, details.globalPosition);
+      },
+    );
+  }
 
   Future<void> _handleDelete() async {
     _hideContextMenu();
@@ -1595,6 +1713,7 @@ class _ContextMenuItemWidget extends StatelessWidget {
 
 class ImageItemWidget extends StatefulWidget {
   final File imageFile;
+  final String imageId;
   final bool isSelected;
   final double extent;
   final VoidCallback onTap;
@@ -1605,6 +1724,7 @@ class ImageItemWidget extends StatefulWidget {
   const ImageItemWidget({
     super.key,
     required this.imageFile,
+    required this.imageId,
     required this.isSelected,
     required this.extent,
     required this.onTap,
@@ -1639,10 +1759,8 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
 
   @override
   Widget build(BuildContext context) {
-    final imageName = p.basename(widget.imageFile.path);
-    final rating = widget.metadataService.getMetadataForImage(imageName).rating;
-
-    final bool isVideo = ['.mp4', '.mov', '.avi', '.mkv'].contains(p.extension(imageName).toLowerCase());
+    final rating = widget.metadataService.getMetadataForImage(widget.imageId).rating;
+    final bool isVideo = ['.mp4', '.mov', '.avi', '.mkv'].contains(p.extension(widget.imageFile.path).toLowerCase());
 
     return GestureDetector(
       onTap: widget.onTap,

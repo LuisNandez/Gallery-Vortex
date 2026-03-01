@@ -3,12 +3,12 @@ import 'package:flutter_typeahead/flutter_typeahead.dart';
 import 'metadata_service.dart'; // Asegúrate de que importa el servicio correcto
 
 class TagEditorDialog extends StatefulWidget {
-  final List<String> imageNames;
+  final List<String> imageIds;
   final MetadataService metadataService; // Usa el servicio de metadatos
 
   const TagEditorDialog({
     super.key,
-    required this.imageNames,
+    required this.imageIds,
     required this.metadataService,
   });
 
@@ -25,11 +25,11 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
     super.initState();
     // Si solo hay una imagen, mostramos sus etiquetas.
     // Si hay varias, mostramos solo las etiquetas que tienen en COMÚN.
-    if (widget.imageNames.length == 1) {
-      _currentTags = widget.metadataService.getMetadataForImage(widget.imageNames.first).tags.toSet();
+    if (widget.imageIds.length == 1) {
+      _currentTags = widget.metadataService.getMetadataForImage(widget.imageIds.first).tags.toSet();
     } else {
-      final allTagsLists = widget.imageNames
-          .map((name) => widget.metadataService.getMetadataForImage(name).tags.toSet());
+      final allTagsLists = widget.imageIds
+          .map((id) => widget.metadataService.getMetadataForImage(id).tags.toSet());
       _currentTags = allTagsLists.reduce((a, b) => a.intersection(b));
     }
   }
@@ -45,8 +45,8 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
       _currentTags.add(cleanTag);
     });
 
-    for (final imageName in widget.imageNames) {
-      widget.metadataService.addTagToImage(imageName, cleanTag);
+    for (final imageId in widget.imageIds) {
+      widget.metadataService.addTagToImage(imageId, cleanTag);
     }
     _typeAheadController.clear();
   }
@@ -55,15 +55,15 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
     setState(() {
       _currentTags.remove(tag);
     });
-    for (final imageName in widget.imageNames) {
-      widget.metadataService.removeTagFromImage(imageName, tag);
+    for (final imageId in widget.imageIds) {
+      widget.metadataService.removeTagFromImage(imageId, tag);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text('Etiquetas para ${widget.imageNames.length} imagen(es)'),
+      title: Text('Etiquetas para ${widget.imageIds.length} imagen(es)'),
       content: SizedBox(
         width: double.maxFinite,
         child: Column(

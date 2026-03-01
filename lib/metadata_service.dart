@@ -1,102 +1,111 @@
 // metadata_service.dart
 import 'dart:convert';
-import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+//import 'package:sqflite/sqflite.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-const String _allTagsKey = 'all_tags_list';
-
-// Una clase para guardar toda la metadata de una imagen de forma ordenada.
 class ImageMetadata {
   List<String> tags;
-  int rating; // 0 = sin calificar, 1-5 = estrellas
+  int rating;
 
   ImageMetadata({this.tags = const [], this.rating = 0});
-
-  // Fábrica para crear un objeto desde un JSON
-  factory ImageMetadata.fromJson(Map<String, dynamic> json) {
-    return ImageMetadata(
-      tags: List<String>.from(json['tags'] ?? []),
-      rating: json['rating'] ?? 0,
-    );
-  }
-
-  // Método para convertir el objeto a un JSON
-  Map<String, dynamic> toJson() {
-    return {
-      'tags': tags,
-      'rating': rating,
-    };
-  }
 }
 
 class MetadataService {
-  Map<String, ImageMetadata> _imageData = {};
+  final Map<String, ImageMetadata> _imageData = {};
   List<String> _allTags = [];
   bool _isInitialized = false;
-  File? _jsonFile;
+  late Database _db;
 
   Future<void> initialize() async {
     if (_isInitialized) return;
 
     final appDir = await getApplicationDocumentsDirectory();
-    // Cambiamos el nombre del archivo para reflejar su nuevo propósito
-    _jsonFile = File(p.join(appDir.path, 'metadata.json'));
+    final dbPath = p.join(appDir.path, 'vault_metadata.db');
 
-    if (await _jsonFile!.exists()) {
-      final jsonString = await _jsonFile!.readAsString();
-      final Map<String, dynamic> decodedJson = jsonDecode(jsonString);
-      _imageData = decodedJson.map((key, value) {
-        // Esto permite compatibilidad con datos viejos
-        if (value is List) {
-          return MapEntry(key, ImageMetadata(tags: List<String>.from(value)));
-        }
-        return MapEntry(key, ImageMetadata.fromJson(value));
-      });
+    _db = await openDatabase(
+      dbPath,
+      version: 1,
+      onCreate: (db, version) async {
+        await db.execute('''
+          CREATE TABLE metadata (
+            image_id TEXT PRIMARY KEY,
+            tags TEXT,
+            rating INTEGER
+          )
+        ''');
+        await db.execute('''
+          CREATE TABLE tags (
+            tag TEXT PRIMARY KEY
+          )
+        ''');
+      },
+    );
+
+    // Cargar todo a memoria para lecturas instantáneas (síncronas) en la UI
+    final metadataRows = await _db.query('metadata');
+    for (final row in metadataRows) {
+      _imageData[row['image_id'] as String] = ImageMetadata(
+        tags: List<String>.from(jsonDecode(row['tags'] as String)),
+        rating: row['rating'] as int,
+      );
     }
 
-    final prefs = await SharedPreferences.getInstance();
-    _allTags = prefs.getStringList(_allTagsKey) ?? [];
+    final tagRows = await _db.query('tags');
+    _allTags = tagRows.map((row) => row['tag'] as String).toList();
+
     _isInitialized = true;
   }
 
-  ImageMetadata getMetadataForImage(String imageName) {
-    return _imageData[imageName] ?? ImageMetadata();
+  // IMPORTANTE: Ahora recibe el imageId (ruta relativa), no el nombre del archivo
+  ImageMetadata getMetadataForImage(String imageId) {
+    return _imageData[imageId] ?? ImageMetadata();
   }
 
   List<String> getAllTags() => List.from(_allTags);
 
-  Future<void> addTagToImage(String imageName, String tag) async {
+  Future<void> addTagToImage(String imageId, String tag) async {
     final cleanTag = tag.trim().toLowerCase();
     if (cleanTag.isEmpty) return;
 
-    final metadata = _imageData.putIfAbsent(imageName, () => ImageMetadata());
+    final metadata = _imageData.putIfAbsent(imageId, () => ImageMetadata());
     if (!metadata.tags.contains(cleanTag)) {
       metadata.tags.add(cleanTag);
     }
 
     if (!_allTags.contains(cleanTag)) {
       _allTags.add(cleanTag);
+      await _db.insert('tags', {'tag': cleanTag}, conflictAlgorithm: ConflictAlgorithm.ignore);
     }
-    await _saveData();
+
+    await _saveSingleMetadata(imageId, metadata);
   }
 
-  Future<void> removeTagFromImage(String imageName, String tag) async {
-    _imageData[imageName]?.tags.remove(tag.trim().toLowerCase());
-    await _saveData();
+  Future<void> removeTagFromImage(String imageId, String tag) async {
+    final cleanTag = tag.trim().toLowerCase();
+    if (_imageData.containsKey(imageId)) {
+      _imageData[imageId]!.tags.remove(cleanTag);
+      await _saveSingleMetadata(imageId, _imageData[imageId]!);
+    }
   }
 
-  // NUEVO: Método para establecer la calificación
-  Future<void> setRatingForImage(String imageName, int rating) async {
-    final metadata = _imageData.putIfAbsent(imageName, () => ImageMetadata());
+  Future<void> setRatingForImage(String imageId, int rating) async {
+    final metadata = _imageData.putIfAbsent(imageId, () => ImageMetadata());
     metadata.rating = rating;
-    await _saveData();
+    await _saveSingleMetadata(imageId, metadata);
   }
 
-  Future<void> _saveData() async {
-    await _jsonFile?.writeAsString(jsonEncode(_imageData));
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_allTagsKey, _allTags);
+  // Guarda SOLO el registro modificado. Cero cuellos de botella.
+  Future<void> _saveSingleMetadata(String imageId, ImageMetadata metadata) async {
+    await _db.insert(
+      'metadata',
+      {
+        'image_id': imageId,
+        'tags': jsonEncode(metadata.tags),
+        'rating': metadata.rating,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
 }
