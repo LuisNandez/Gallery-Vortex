@@ -257,6 +257,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   List<FileSystemEntity> _vaultContents = [];
   bool _isLoading = true;
   bool _isPaused = false;
+  bool _isWatcherPaused = false;
   String? _vortexPath;
   StreamSubscription<WatchEvent>? _watcherSubscription;
   late Directory _currentVaultDir;
@@ -545,6 +546,42 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         }
       }
     });
+  }
+
+  Future<void> _toggleWatcher() async {
+    // 1. Solo actualizamos el ícono del botón de pausa/play
+    setState(() {
+      _isWatcherPaused = !_isWatcherPaused;
+    });
+
+    if (_isWatcherPaused) {
+      await _watcherSubscription?.cancel();
+      _watcherSubscription = null;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Vigilancia del Vórtice pausada.')),
+        );
+      }
+    } else {
+      if (_vortexPath != null) {
+        // 2. Absorbemos los archivos atrasados de forma "invisible" (reloadUI: false)
+        // No tocamos _isLoading para que la cuadrícula no desaparezca
+        await _absorbInitialVortexContents(Directory(_vortexPath!), reloadUI: false);
+        
+        // 3. Reiniciamos el observador
+        _startWatcher(_vortexPath!);
+        
+        // 4. Actualizamos la cuadrícula de forma "silenciosa" (quiet: true)
+        // Esto agrega las nuevas imágenes a la lista manteniendo tu posición de scroll
+        await _loadVaultContents(quiet: true);
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Vigilancia del Vórtice reanudada.')),
+          );
+        }
+      }
+    }
   }
 
   Future<String> _getUniquePath(
@@ -1047,6 +1084,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         await _loadVaultContents();
         setState(() {
           _vortexPath = directoryPath;
+          _isWatcherPaused = false;
         });
         _startWatcher(directoryPath);
       }
@@ -1066,6 +1104,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     await prefs.remove(_vortexFolderPathKey);
     setState(() {
       _vortexPath = null;
+      _isWatcherPaused = false;
     });
   }
 
@@ -1146,6 +1185,15 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         titleSpacing: 0,
         backgroundColor: Colors.black26,
         actions: [
+          if (!_isLoading && _vortexPath != null && widget.currentDirectory == null)
+            IconButton(
+              icon: Icon(
+                _isWatcherPaused ? Icons.play_circle_outline : Icons.pause_circle_outline,
+                color: _isWatcherPaused ? Colors.amber : Colors.white,
+              ),
+              tooltip: _isWatcherPaused ? 'Reanudar vórtice' : 'Pausar vórtice',
+              onPressed: _toggleWatcher,
+            ),
           if (!_isLoading && _vortexPath != null)
             IconButton(
               icon: const Icon(Icons.create_new_folder_outlined),
