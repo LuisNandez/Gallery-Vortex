@@ -145,13 +145,8 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
     await trayManager.setIcon(
       Platform.isWindows ? 'assets/app_icon.ico' : 'assets/app_icon.png',
     );
-    Menu menu = Menu(items: [
-      MenuItem(key: 'show_window', label: 'Mostrar Aplicación'),
-      MenuItem.separator(),
-      MenuItem(key: 'exit_application', label: 'Cerrar Aplicación'),
-    ]);
-    await trayManager.setContextMenu(menu);
     await trayManager.setToolTip('Galería Vórtice');
+    // Eliminamos el setContextMenu de aquí. Lo crearemos dinámicamente en el clic derecho.
   }
 
   @override
@@ -164,7 +159,24 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
   }
 
   @override
-  void onTrayIconRightMouseDown() => trayManager.popUpContextMenu();
+  void onTrayIconRightMouseDown() async {
+    // Leemos la variable directamente usando la GlobalKey
+    final isPaused = _vaultExplorerKey.currentState?.isWatcherPaused ?? false;
+    
+    Menu menu = Menu(items: [
+      MenuItem(key: 'show_window', label: 'Mostrar Aplicación'),
+      // Mostramos un texto distinto según el estado de la variable
+      MenuItem(
+        key: 'toggle_watcher', 
+        label: isPaused ? '▶ Reanudar Vórtice' : '⏸ Pausar Vórtice'
+      ),
+      MenuItem.separator(),
+      MenuItem(key: 'exit_application', label: 'Cerrar Aplicación'),
+    ]);
+    
+    await trayManager.setContextMenu(menu);
+    trayManager.popUpContextMenu();
+  }
 
   @override
   void onTrayMenuItemClick(MenuItem menuItem) {
@@ -174,6 +186,9 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
         _isWindowVisible = true;
         _isAuthenticated = false;
       });
+    } else if (menuItem.key == 'toggle_watcher') {
+      // Mandamos a llamar la función del explorador desde aquí afuera
+      _vaultExplorerKey.currentState?.toggleWatcher();
     } else if (menuItem.key == 'exit_application') {
       windowManager.destroy();
     }
@@ -272,6 +287,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   Set<FileSystemEntity> _selectedItems = {};
   static List<FileSystemEntity> _clipboard = [];
   static bool _isCutOperation = false;
+
+  bool get isWatcherPaused => _isWatcherPaused;
 
   // State for marquee selection
   final GlobalKey _gridDetectorKey = GlobalKey();
@@ -548,8 +565,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     });
   }
 
-  Future<void> _toggleWatcher() async {
-    // 1. Solo actualizamos el ícono del botón de pausa/play
+  Future<void> toggleWatcher() async {
     setState(() {
       _isWatcherPaused = !_isWatcherPaused;
     });
@@ -564,15 +580,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       }
     } else {
       if (_vortexPath != null) {
-        // 2. Absorbemos los archivos atrasados de forma "invisible" (reloadUI: false)
-        // No tocamos _isLoading para que la cuadrícula no desaparezca
         await _absorbInitialVortexContents(Directory(_vortexPath!), reloadUI: false);
-        
-        // 3. Reiniciamos el observador
         _startWatcher(_vortexPath!);
-        
-        // 4. Actualizamos la cuadrícula de forma "silenciosa" (quiet: true)
-        // Esto agrega las nuevas imágenes a la lista manteniendo tu posición de scroll
         await _loadVaultContents(quiet: true);
         
         if (mounted) {
@@ -1192,7 +1201,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                 color: _isWatcherPaused ? Colors.amber : Colors.white,
               ),
               tooltip: _isWatcherPaused ? 'Reanudar vórtice' : 'Pausar vórtice',
-              onPressed: _toggleWatcher,
+              onPressed: toggleWatcher,
             ),
           if (!_isLoading && _vortexPath != null)
             IconButton(
