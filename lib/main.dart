@@ -15,6 +15,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'video_player_widget.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:local_notifier/local_notifier.dart';
 
 // Imports de los nuevos archivos
 import 'metadata_service.dart';
@@ -28,6 +29,7 @@ const String _masterPinKey = 'master_pin';
 const String _thumbnailExtentKey = 'thumbnail_extent';
 const String _closeActionKey = 'close_action'; // 'exit' or 'minimize'
 const String _startupActionKey = 'startup_action'; // bool
+const String _showNotificationsKey = 'show_notifications';
 
 enum CloseAction { exit, minimize }
 
@@ -41,6 +43,10 @@ void main(List<String> args) async {
   }
   
   await windowManager.ensureInitialized();
+  await localNotifier.setup(
+    appName: 'GVortex',
+    shortcutPolicy: ShortcutPolicy.requireCreate, // <-- ESTA ES LA MAGIA PARA WINDOWS
+  );
 
   PackageInfo packageInfo = await PackageInfo.fromPlatform();
   launchAtStartup.setup(
@@ -156,6 +162,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
       _isWindowVisible = true;
       _isAuthenticated = false;
     });
+    _vaultExplorerKey.currentState?.resume();
   }
 
   @override
@@ -186,6 +193,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
         _isWindowVisible = true;
         _isAuthenticated = false;
       });
+      _vaultExplorerKey.currentState?.resume();
     } else if (menuItem.key == 'toggle_watcher') {
       // Mandamos a llamar la función del explorador desde aquí afuera
       _vaultExplorerKey.currentState?.toggleWatcher();
@@ -212,6 +220,18 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
       // Le decimos a VaultExplorer que se prepare para ser mostrado.
       _vaultExplorerKey.currentState?.resume();
     });
+  }
+  
+  @override
+  void onWindowMinimize() {
+    // Si el usuario minimiza con el botón (-), también activamos la pausa
+    _vaultExplorerKey.currentState?.pause();
+  }
+
+  @override
+  void onWindowRestore() {
+    // Al restaurar la ventana desde la barra de tareas, reanudamos
+    _vaultExplorerKey.currentState?.resume();
   }
 
   @override
@@ -311,6 +331,10 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   
   // Scroll controller
   final ScrollController _scrollController = ScrollController();
+
+  // State para notificaciones
+  int _backgroundAbsorbedCount = 0;
+  Timer? _notificationTimer;
 
   bool _isSupportedFile(String filePath) {
   final ext = p.extension(filePath).toLowerCase();
@@ -419,6 +443,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _doubleTapTimer?.cancel();
     _hideContextMenu();
     _scrollController.dispose();
+    _notificationTimer?.cancel();
     super.dispose();
   }
 
@@ -432,6 +457,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     if (closeAction == CloseAction.exit.name) {
       windowManager.destroy(); // Cierra la app
     } else {
+      pause();
       windowManager.hide(); // Minimiza a la bandeja
     }
     // --- FIN DE LA MODIFICACIÓN ---
@@ -643,6 +669,26 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
     try {
       await _moveFileRobustly(imageFile, newPathInVault);
+      // _isPaused es 'true' cuando la ventana está oculta (minimizada en bandeja)
+      if (_isPaused) {
+        _backgroundAbsorbedCount++;
+        _notificationTimer?.cancel(); // Cancelamos si entra otro archivo rápido
+        
+        // Esperamos 3 segundos desde el último archivo para lanzar el aviso global
+        _notificationTimer = Timer(const Duration(seconds: 3), () async {
+          final prefs = await SharedPreferences.getInstance();
+          final showNotif = prefs.getBool(_showNotificationsKey) ?? true;
+          
+          if (showNotif && _backgroundAbsorbedCount > 0) {
+            final notification = LocalNotification(
+              title: "GVortex",
+              body: "Se han enviado $_backgroundAbsorbedCount archivo(s) a la bóveda.",
+            );
+            await notification.show();
+            _backgroundAbsorbedCount = 0; // Reiniciamos el contador
+          }
+        });
+      }
       if (p.equals(_currentVaultDir.path, _vaultRootDir.path)) {
         // NUEVO: Solo recargamos la lista gráfica si NO estamos pausados
         if (reloadUI && !_isPaused) {
@@ -2470,6 +2516,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   CloseAction _closeAction = CloseAction.minimize;
   bool _startup = false;
+  bool _showNotifications = true;
   bool _isLoading = true;
 
   @override
@@ -2482,6 +2529,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final prefs = await SharedPreferences.getInstance();
     final closeActionName = prefs.getString(_closeActionKey) ?? CloseAction.minimize.name;
     final startup = await launchAtStartup.isEnabled();
+    final showNotif = prefs.getBool(_showNotificationsKey) ?? true;
 
     if (mounted) {
       setState(() {
@@ -2490,9 +2538,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
           orElse: () => CloseAction.minimize,
         );
         _startup = startup;
+        _showNotifications = showNotif;
         _isLoading = false;
       });
     }
+  }
+
+  Future<void> _setShowNotifications(bool value) async {
+    setState(() => _showNotifications = value);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_showNotificationsKey, value);
   }
 
   Future<void> _setCloseAction(CloseAction? value) async {
@@ -2593,6 +2648,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   subtitle: const Text('La app se iniciará automáticamente al encender el PC.'),
                   value: _startup,
                   onChanged: _setStartup,
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  'Notificaciones',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        color: Theme.of(context).colorScheme.secondary,
+                        fontWeight: FontWeight.bold,
+                      ),
+                ),
+                const Divider(height: 20),
+                SwitchListTile(
+                  title: const Text('Avisos en segundo plano'),
+                  subtitle: const Text('Mostrar notificaciones de Windows cuando se oculten archivos estando minimizado.'),
+                  value: _showNotifications,
+                  onChanged: _setShowNotifications,
                 ),
               ],
             ),

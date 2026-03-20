@@ -92,7 +92,11 @@ class ThumbnailService {
     if (_isProcessingBatch) return;
     _isProcessingBatch = true;
 
-    for (var entity in files) {
+    // --- LA MAGIA: Creamos una copia exacta (clon) de la lista ---
+    // Así, si la app principal hace un .clear() al pausarse, este bucle no crashea.
+    final List<FileSystemEntity> safeFilesCopy = List.from(files);
+
+    for (var entity in safeFilesCopy) { // <-- Iteramos sobre la copia
       if (entity is File && _isSupportedImageOrVideo(entity.path)) {
         final thumbPath = p.join(_thumbnailDir!.path, _getThumbName(entity.path));
         
