@@ -8,8 +8,9 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 class ImageMetadata {
   List<String> tags;
   int rating;
+  int addedTimestamp;
 
-  ImageMetadata({this.tags = const [], this.rating = 0});
+  ImageMetadata({this.tags = const [], this.rating = 0, this.addedTimestamp = 0});
 }
 
 class MetadataService {
@@ -26,13 +27,14 @@ class MetadataService {
 
     _db = await openDatabase(
       dbPath,
-      version: 1,
+      version: 2,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE metadata (
             image_id TEXT PRIMARY KEY,
             tags TEXT,
             rating INTEGER
+            added_timestamp INTEGER
           )
         ''');
         await db.execute('''
@@ -40,6 +42,12 @@ class MetadataService {
             tag TEXT PRIMARY KEY
           )
         ''');
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        // MIGRACIÓN SEGURA: Añade la columna a tu tabla existente sin borrar datos
+        if (oldVersion < 2) {
+          await db.execute('ALTER TABLE metadata ADD COLUMN added_timestamp INTEGER DEFAULT 0');
+        }
       },
     );
 
@@ -49,6 +57,7 @@ class MetadataService {
       _imageData[row['image_id'] as String] = ImageMetadata(
         tags: List<String>.from(jsonDecode(row['tags'] as String)),
         rating: row['rating'] as int,
+        addedTimestamp: (row['added_timestamp'] as int?) ?? 0,
       );
     }
 
@@ -104,9 +113,16 @@ class MetadataService {
         'image_id': imageId,
         'tags': jsonEncode(metadata.tags),
         'rating': metadata.rating,
+        'added_timestamp': metadata.addedTimestamp,
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+  }
+
+  Future<void> setAddedTimestamp(String imageId, int timestamp) async {
+    final metadata = _imageData.putIfAbsent(imageId, () => ImageMetadata());
+    metadata.addedTimestamp = timestamp;
+    await _saveSingleMetadata(imageId, metadata);
   }
 
   Future<void> updateImagePath(String oldId, String newId) async {

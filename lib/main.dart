@@ -30,12 +30,16 @@ const String _thumbnailExtentKey = 'thumbnail_extent';
 const String _closeActionKey = 'close_action'; // 'exit' or 'minimize'
 const String _startupActionKey = 'startup_action'; // bool
 const String _showNotificationsKey = 'show_notifications';
+const String _sortCriteriaKey = 'sort_criteria';
+const String _sortAscendingKey = 'sort_ascending';
 
+enum SortCriteria { date, name, size }
 enum CloseAction { exit, minimize }
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
+  bool startHidden = args.contains('--minimized');
 
   if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
     sqfliteFfiInit();
@@ -64,21 +68,21 @@ void main(List<String> args) async {
   );
 
   windowManager.waitUntilReadyToShow(windowOptions, () async {
-    if (args.contains('--minimized')) {
-      // Si existe (inicio automático), inicia oculta
+    if (startHidden) {
       await windowManager.hide();
     } else {
-      // Si no existe (inicio manual), se muestra
       await windowManager.show();
       await windowManager.focus();
     }
   });
 
-  runApp(const MyApp());
+  // Le pasamos el estado a MyApp
+  runApp(MyApp(startHidden: startHidden));
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final bool startHidden; // <-- NUEVO
+  const MyApp({super.key, this.startHidden = false});
 
   @override
   Widget build(BuildContext context) {
@@ -91,7 +95,7 @@ class MyApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const AuthWrapper(),
+      home: AuthWrapper(startHidden: startHidden),
     );
   }
 }
@@ -120,7 +124,8 @@ class BackgroundServiceScreen extends StatelessWidget {
 }
 
 class AuthWrapper extends StatefulWidget {
-  const AuthWrapper({super.key});
+  final bool startHidden;
+  const AuthWrapper({super.key, this.startHidden = false});
 
   @override
   State<AuthWrapper> createState() => _AuthWrapperState();
@@ -128,13 +133,14 @@ class AuthWrapper extends StatefulWidget {
 
 class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayListener {
   bool _isAuthenticated = false;
-  bool _isWindowVisible = true;
+  late bool _isWindowVisible;
 
   final GlobalKey<_VaultExplorerScreenState> _vaultExplorerKey = GlobalKey<_VaultExplorerScreenState>();
 
   @override
   void initState() {
     super.initState();
+    _isWindowVisible = !widget.startHidden;
     windowManager.addListener(this);
     trayManager.addListener(this);
     _initTray();
@@ -244,6 +250,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
           offstage: !_isWindowVisible || !_isAuthenticated,
           child: VaultExplorerScreen(
             key: _vaultExplorerKey,
+            startPaused: widget.startHidden,
             setAuthenticated: (value) {
               setState(() {
                 _isAuthenticated = value;
@@ -276,11 +283,13 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
 class VaultExplorerScreen extends StatefulWidget {
   final Directory? currentDirectory;
   final Function(bool) setAuthenticated;
+  final bool startPaused;
 
   const VaultExplorerScreen({
     super.key,
     this.currentDirectory,
     required this.setAuthenticated,
+    this.startPaused = false,
   });
 
   @override
@@ -291,10 +300,11 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     with WindowListener{
   List<FileSystemEntity> _vaultContents = [];
   bool _isLoading = true;
-  bool _isPaused = false;
+  late bool _isPaused;
   bool _isWatcherPaused = false;
   String? _vortexPath;
   StreamSubscription<WatchEvent>? _watcherSubscription;
+  final Set<String> _processingFiles = {};
   late Directory _currentVaultDir;
   late Directory _vaultRootDir;
   final TextEditingController _folderNameController = TextEditingController();
@@ -336,6 +346,10 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   int _backgroundAbsorbedCount = 0;
   Timer? _notificationTimer;
 
+  // State para ordenamiento
+  SortCriteria _currentSortCriteria = SortCriteria.date;
+  bool _sortAscending = true; // true = más viejo/A-Z/más liviano primero
+
   bool _isSupportedFile(String filePath) {
   final ext = p.extension(filePath).toLowerCase();
   return _isImageFile(filePath) || ['.mp4', '.mov', '.avi', '.mkv'].contains(ext);
@@ -345,6 +359,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   @override
   void initState() {
     super.initState();
+    _isPaused = widget.startPaused;
     windowManager.addListener(this);
     _initializeAppServices();
   }
@@ -487,9 +502,13 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     final prefs = await SharedPreferences.getInstance();
     final savedSize = prefs.getDouble(_thumbnailExtentKey) ?? 150.0;
     final path = prefs.getString(_vortexFolderPathKey);
+    final sortIndex = prefs.getInt(_sortCriteriaKey) ?? SortCriteria.date.index;
+    final sortAscending = prefs.getBool(_sortAscendingKey) ?? true;
     
     setState(() {
       _thumbnailExtent = savedSize;
+      _currentSortCriteria = SortCriteria.values[sortIndex];
+      _sortAscending = sortAscending;
     });
 
     if (path != null && path.isNotEmpty) {
@@ -504,7 +523,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
 
   Future<void> _loadVaultContents({bool quiet = false}) async {
-    // Solo mostramos el indicador si NO es una recarga silenciosa
     if (!quiet) {
       setState(() => _isLoading = true);
     }
@@ -512,17 +530,71 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     if (!await _currentVaultDir.exists()) {
       await _currentVaultDir.create(recursive: true);
     }
+    
     final contents = await _currentVaultDir.list().toList();
+
+    // --- MAGIA DE OPTIMIZACIÓN (CACHÉ) ---
+    // Pre-calculamos los valores UNA SOLA VEZ para que el ordenamiento sea instantáneo
+    final Map<String, int> sizeCache = {};
+    final Map<String, String> nameCache = {};
+    final Map<String, int> timeCache = {};
+
+    if (contents.isNotEmpty) {
+      for (final entity in contents) {
+        if (entity is File) {
+          if (_currentSortCriteria == SortCriteria.size) {
+            sizeCache[entity.path] = entity.lengthSync(); // Solo 1 lectura al disco duro por archivo
+          } else if (_currentSortCriteria == SortCriteria.name) {
+            nameCache[entity.path] = _getDeobfuscatedName(p.basename(entity.path)).toLowerCase();
+          } else if (_currentSortCriteria == SortCriteria.date) {
+            final id = p.relative(entity.path, from: _vaultRootDir.path);
+            timeCache[entity.path] = _metadataService.getMetadataForImage(id).addedTimestamp;
+          }
+        }
+      }
+    }
+    // --- FIN DE LA MAGIA ---
+
     contents.sort((a, b) {
+      // Las carpetas siempre van primero
       if (a is Directory && b is File) return -1;
       if (a is File && b is Directory) return 1;
-      return a.path.compareTo(b.path);
+
+      int comparison = 0;
+
+      if (a is File && b is File) {
+        switch (_currentSortCriteria) {
+          case SortCriteria.date:
+            // Leemos de nuestra RAM, sin calcular nada
+            final timeA = timeCache[a.path] ?? 0;
+            final timeB = timeCache[b.path] ?? 0;
+            comparison = timeA.compareTo(timeB);
+            if (comparison == 0) comparison = a.path.compareTo(b.path);
+            break;
+            
+          case SortCriteria.name:
+            final nameA = nameCache[a.path] ?? '';
+            final nameB = nameCache[b.path] ?? '';
+            comparison = nameA.compareTo(nameB);
+            break;
+            
+          case SortCriteria.size:
+            final sizeA = sizeCache[a.path] ?? 0;
+            final sizeB = sizeCache[b.path] ?? 0;
+            comparison = sizeA.compareTo(sizeB);
+            break;
+        }
+      } else if (a is Directory && b is Directory) {
+        comparison = p.basename(a.path).toLowerCase().compareTo(p.basename(b.path).toLowerCase());
+      }
+
+      return _sortAscending ? comparison : -comparison;
     });
 
     setState(() {
       _vaultContents = contents;
       _itemKeys.clear();
-      _isLoading = false; // Siempre lo apagamos al terminar por seguridad
+      _isLoading = false; 
       _shiftSelectionAnchorIndex = null;
     });
     
@@ -533,8 +605,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     int lastSize = -1;
     int stableCount = 0;
 
-    // Hacemos un bucle hasta que el archivo esté completamente listo.
-    // Esto soporta descargas que pueden tardar horas.
     while (true) {
       try {
         if (!await file.exists()) {
@@ -543,27 +613,26 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
         int currentSize = await file.length();
 
+        // Verificamos si el tamaño es mayor a 0 y no ha cambiado
         if (currentSize == lastSize && currentSize > 0) {
           stableCount++;
-          // Exigimos 3 comprobaciones idénticas seguidas (1.5 segundos de estabilidad)
-          if (stableCount >= 3) {
-            // Verificación final: Intentamos abrir el archivo sin destruirlo.
-            // Si Chrome/Windows aún lo está escribiendo, esto lanzará una excepción.
+          // AUMENTAMOS LA EXIGENCIA: 6 comprobaciones (3 segundos estables)
+          // Esto evita que las pausas de internet engañen a la app.
+          if (stableCount >= 6) {
             RandomAccessFile? raf;
             try {
               raf = await file.open(mode: FileMode.append);
               await raf.close();
-              return true; // ¡El archivo está 100% listo para ser movido!
+              return true; // ¡100% listo!
             } catch (e) {
-              stableCount = 0; // Aún tiene un candado de escritura, seguimos esperando
+              stableCount = 0; // Aún bloqueado por el navegador
             }
           }
         } else {
-          stableCount = 0; // El tamaño cambió, sigue copiándose
+          stableCount = 0; // Sigue descargando, reiniciamos el contador
         }
         lastSize = currentSize;
       } catch (e) {
-        // Ignoramos errores temporales si el archivo está fuertemente bloqueado
         stableCount = 0;
       }
 
@@ -576,16 +645,27 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     final watcher = DirectoryWatcher(path);
     
     _watcherSubscription = watcher.events.listen((event) async {
-      // Cuando detectamos que "aparece" un archivo nuevo...
-      if (event.type == ChangeType.ADD && _isSupportedFile(event.path)) {
-        final file = File(event.path);
+      // Ahora escuchamos tanto creaciones como modificaciones
+      if ((event.type == ChangeType.ADD || event.type == ChangeType.MODIFY) && 
+          _isSupportedFile(event.path)) {
         
-        // 1. Esperamos pacientemente a que termine de copiarse/descargarse
-        final isReady = await _waitUntilFileIsReady(file);
+        final filePath = event.path;
         
-        // 2. Solo cuando está listo (y si no cerramos la app mientras tanto), lo absorbemos
-        if (isReady && mounted) {
-          await _absorbImage(file);
+        // Si ya estamos vigilando este archivo, lo ignoramos para no saturar
+        if (_processingFiles.contains(filePath)) return;
+        
+        final file = File(filePath);
+        _processingFiles.add(filePath); // Lo agregamos a la lista de espera
+        
+        try {
+          final isReady = await _waitUntilFileIsReady(file);
+          
+          if (isReady && mounted) {
+            await _absorbImage(file);
+          }
+        } finally {
+          // Una vez absorbido (o fallido), lo quitamos de la lista
+          _processingFiles.remove(filePath);
         }
       }
     });
@@ -647,34 +727,27 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   Future<void> _absorbImage(File imageFile, {bool reloadUI = true}) async {
     if (!await imageFile.exists()) return;
     
+    // 1. Conservamos el nombre original exactamente como viene
     final String originalFileName = p.basename(imageFile.path);
-    final String baseName = p.basenameWithoutExtension(originalFileName);
     
-    final bool meetsFormat = 
-        int.tryParse(baseName) != null && baseName.length == 13;
-    
-    String newName;
-    if (meetsFormat) {
-      newName = originalFileName;
-    } else {
-      // Generamos el timestamp y mantenemos la extensión original
-      final String extension = p.extension(imageFile.path);
-      newName = '${DateTime.now().millisecondsSinceEpoch}$extension';
-    }
-    
-    // Aplicamos nuestra ofuscación limpia: 12345.jpg -> 12345_jpg.vtx
-    newName = _obfuscateName(newName);
+    // 2. Solo aplicamos la ofuscación (.vtx)
+    String newName = _obfuscateName(originalFileName);
     
     final newPathInVault = await _getUniquePath(_vaultRootDir, newName);
 
     try {
       await _moveFileRobustly(imageFile, newPathInVault);
-      // _isPaused es 'true' cuando la ventana está oculta (minimizada en bandeja)
+      
+      // 3. NUEVO: Guardamos la fecha exacta de ingreso en la Base de Datos
+      final imageId = p.relative(newPathInVault, from: _vaultRootDir.path);
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      await _metadataService.setAddedTimestamp(imageId, timestamp);
+
+      // (A partir de aquí, el código de notificaciones _isPaused sigue igual)
       if (_isPaused) {
         _backgroundAbsorbedCount++;
-        _notificationTimer?.cancel(); // Cancelamos si entra otro archivo rápido
+        _notificationTimer?.cancel();
         
-        // Esperamos 3 segundos desde el último archivo para lanzar el aviso global
         _notificationTimer = Timer(const Duration(seconds: 3), () async {
           final prefs = await SharedPreferences.getInstance();
           final showNotif = prefs.getBool(_showNotificationsKey) ?? true;
@@ -685,12 +758,11 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               body: "Se han enviado $_backgroundAbsorbedCount archivo(s) a la bóveda.",
             );
             await notification.show();
-            _backgroundAbsorbedCount = 0; // Reiniciamos el contador
+            _backgroundAbsorbedCount = 0;
           }
         });
       }
       if (p.equals(_currentVaultDir.path, _vaultRootDir.path)) {
-        // NUEVO: Solo recargamos la lista gráfica si NO estamos pausados
         if (reloadUI && !_isPaused) {
           await _loadVaultContents(quiet: true);
         }
@@ -1262,6 +1334,59 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               icon: const Icon(Icons.restore_from_trash),
               tooltip: 'Restaurar todo y olvidar carpeta',
               onPressed: _restoreAllAndClear,
+            ),
+            if (!_isLoading && _vortexPath != null)
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.sort),
+              tooltip: 'Ordenar elementos',
+              color: const Color(0xFF424242),
+              onSelected: (value) async {
+                final prefs = await SharedPreferences.getInstance();
+                
+                if (value == 'asc_desc') {
+                  setState(() => _sortAscending = !_sortAscending);
+                  await prefs.setBool(_sortAscendingKey, _sortAscending);
+                } else {
+                  final selectedCriteria = SortCriteria.values.firstWhere((e) => e.name == value);
+                  setState(() => _currentSortCriteria = selectedCriteria);
+                  await prefs.setInt(_sortCriteriaKey, selectedCriteria.index);
+                }
+                
+                // Recargamos silenciosamente para aplicar el nuevo orden visualmente
+                await _loadVaultContents(quiet: true);
+              },
+              itemBuilder: (context) => [
+                CheckedPopupMenuItem(
+                  value: SortCriteria.date.name,
+                  checked: _currentSortCriteria == SortCriteria.date,
+                  child: const Text('Por fecha de ingreso'),
+                ),
+                CheckedPopupMenuItem(
+                  value: SortCriteria.name.name,
+                  checked: _currentSortCriteria == SortCriteria.name,
+                  child: const Text('Por nombre original'),
+                ),
+                CheckedPopupMenuItem(
+                  value: SortCriteria.size.name,
+                  checked: _currentSortCriteria == SortCriteria.size,
+                  child: const Text('Por tamaño de archivo'),
+                ),
+                const PopupMenuDivider(),
+                PopupMenuItem(
+                  value: 'asc_desc',
+                  child: Row(
+                    children: [
+                      Icon(
+                        _sortAscending ? Icons.arrow_downward : Icons.arrow_upward, 
+                        size: 20,
+                        color: Colors.white,
+                      ),
+                      const SizedBox(width: 12),
+                      Text(_sortAscending ? 'Orden Ascendente' : 'Orden Descendente'),
+                    ],
+                  ),
+                ),
+              ],
             ),
             IconButton(
             icon: const Icon(Icons.settings_outlined),
