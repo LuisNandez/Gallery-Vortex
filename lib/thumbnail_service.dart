@@ -163,8 +163,14 @@ class ThumbnailService {
 
     // 2. Intentamos leer del Disco Duro
     if (await thumbFile.exists()) {
-      _addToCache(originalPath, thumbFile);
-      return thumbFile;
+      if (await thumbFile.length() > 0) {
+        _addToCache(originalPath, thumbFile);
+        return thumbFile;
+      } else {
+        // Si el archivo existe pero pesa 0 bytes, falló la última vez.
+        // Lo borramos para forzar que se genere correctamente abajo.
+        await thumbFile.delete();
+      }
     }
 
     // 3. Si no existe, lo generamos
@@ -228,11 +234,17 @@ class ThumbnailService {
   }
 
   Future<void> clearThumbnail(String originalImageName) async {
-    if (!_isInitialized) await initialize();
-    final thumbFile = File(p.join(_thumbnailDir!.path, originalImageName));
+    // --- CORRECCIÓN ---
+    // 1. Obtenemos el nombre real que tiene la miniatura en el disco duro
+    final thumbName = _getThumbName(originalImageName); 
+    final thumbFile = File(p.join(_thumbnailDir!.path, thumbName));
+    
+    // 2. Ahora sí, borramos el archivo correcto
     if (await thumbFile.exists()) {
       await thumbFile.delete();
     }
+    
+    // 3. Limpiamos la memoria RAM (caché)
     _cache.removeWhere((key, value) => p.basename(key) == originalImageName);
   }
 

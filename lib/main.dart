@@ -2078,7 +2078,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           final cleanName = _getDeobfuscatedName(p.basename(entity.path));
           final newPath = await _getUniquePath(destination, cleanName);
           
-          await _metadataService.deleteMetadata(idToDelete); 
+          await _metadataService.deleteMetadata(idToDelete);
+          await _thumbnailService.clearThumbnail(p.basename(entity.path)); 
           await _moveFileRobustly(entity, newPath);
         } else if (entity is Directory) {
           final newDestDir = Directory(await _getUniquePath(destination, p.basename(entity.path)));
@@ -2129,6 +2130,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         final newPath = await _getUniquePath(destinationDir, cleanName);
         
         await _metadataService.deleteMetadata(idToDelete);
+        await _thumbnailService.clearThumbnail(p.basename(entity.path));
         await _moveFileRobustly(entity, newPath);
       } else if (entity is Directory) {
         final newDestDir = Directory(await _getUniquePath(destinationDir, p.basename(entity.path)));
