@@ -701,12 +701,30 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   Future<String> _getUniquePath(
       Directory destinationDir, String fileName) async {
-    String baseName = p.basenameWithoutExtension(fileName);
-    String extension = p.extension(fileName);
+    bool isVtx = fileName.toLowerCase().endsWith('.vtx');
+    String baseName = p.basenameWithoutExtension(fileName); // Ej: imagen0qoh
+    String extension = p.extension(fileName); // Ej: .vtx
     String newPath = p.join(destinationDir.path, fileName);
     int counter = 1;
+
     while (await File(newPath).exists() || await Directory(newPath).exists()) {
-      fileName = '$baseName ($counter)$extension';
+      if (isVtx) {
+        // Buscamos dónde empieza la extensión cifrada (el último '0')
+        final lastZero = baseName.lastIndexOf('0');
+        if (lastZero != -1) {
+          final realBase = baseName.substring(0, lastZero); // Ej: imagen
+          final cipheredExt = baseName.substring(lastZero); // Ej: 0qoh
+          
+          // Insertamos el contador justo en medio: imagen (1)0qoh.vtx
+          fileName = '$realBase ($counter)$cipheredExt$extension';
+        } else {
+          // Fallback de seguridad
+          fileName = '$baseName ($counter)$extension';
+        }
+      } else {
+        // Comportamiento normal para archivos no cifrados o carpetas
+        fileName = '$baseName ($counter)$extension';
+      }
       newPath = p.join(destinationDir.path, fileName);
       counter++;
     }
@@ -2342,6 +2360,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
             },
             itemBuilder: (context, index) {
               final imageFile = widget.imageFiles[index];
+              final bool isCurrentPage = index == _currentIndex;
               
               final bool isVideo = _isVideo(imageFile.path);
               if (isVideo) {
@@ -2349,7 +2368,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                 return VideoViewerWidget(videoFile: imageFile);
               }
               return Hero(
-                tag: imageFile.path,
+                tag: isCurrentPage ? imageFile.path : '${imageFile.path}_disabled',
                 child: InteractiveViewer(
                   panEnabled: false,
                   minScale: 1.0,
