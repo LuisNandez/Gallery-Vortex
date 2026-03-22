@@ -80,6 +80,14 @@ void main(List<String> args) async {
   runApp(MyApp(startHidden: startHidden));
 }
 
+class SiguienteImagenIntent extends Intent {
+  const SiguienteImagenIntent();
+}
+
+class AnteriorImagenIntent extends Intent {
+  const AnteriorImagenIntent();
+}
+
 class MyApp extends StatelessWidget {
   final bool startHidden; // <-- NUEVO
   const MyApp({super.key, this.startHidden = false});
@@ -2281,6 +2289,25 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
     super.dispose();
   }
 
+  // --- MÉTODOS DE NAVEGACIÓN ---
+  void _irASiguiente() {
+    if (_currentIndex < widget.imageFiles.length - 1) {
+      _pageController.nextPage(
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+
+  void _irAAnterior() {
+    if (_currentIndex > 0) {
+      _pageController.previousPage(
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final currentFile = widget.imageFiles[_currentIndex];
@@ -2288,140 +2315,155 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
     final imageId = p.relative(currentFile.path, from: widget.vaultRootPath);
     final currentRating = widget.metadataService.getMetadataForImage(imageId).rating;
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.close, color: Colors.white),
-          onPressed: widget.onClose,
-        ),
-        actions: [
-          // 1. Botón de Etiquetas
-          IconButton(
-            icon: const Icon(Icons.label_outline, color: Colors.white),
-            tooltip: 'Etiquetas',
-            onPressed: () {
-              showDialog(
-                context: context,
-                builder: (context) => TagEditorDialog(
-                  imageIds: [imageId],
-                  metadataService: widget.metadataService,
-                ),
-              ).then((_) => setState(() {})); // Refresca la vista si cambian las etiquetas
-            },
+    // --- ENVOLVEMOS EL WIDGET PARA ESCUCHAR EL TECLADO ---
+    return Shortcuts(
+      shortcuts: <ShortcutActivator, Intent>{
+        const SingleActivator(LogicalKeyboardKey.arrowRight): const SiguienteImagenIntent(),
+        const SingleActivator(LogicalKeyboardKey.arrowLeft): const AnteriorImagenIntent(),
+      },
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          SiguienteImagenIntent: CallbackAction<SiguienteImagenIntent>(
+            onInvoke: (intent) => _irASiguiente(),
           ),
-          
-          // 2. Menú de Calificación (Estrellas)
-          PopupMenuButton<int>(
-            icon: currentRating > 0 
-                ? const Icon(Icons.star, color: Colors.amber)
-                : const Icon(Icons.star_outline, color: Colors.white),
-            tooltip: 'Calificación',
-            color: const Color(0xFF424242),
-            itemBuilder: (context) => List.generate(6, (index) {
-              return PopupMenuItem(
-                value: index,
-                child: Row(
-                  children: [
-                    if (index == 0)
-                      const Text("Sin calificar", style: TextStyle(color: Colors.white))
-                    else
-                      RatingStarsDisplay(rating: index, iconSize: 20),
-                  ],
-                ),
-              );
-            }),
-            onSelected: (newRating) {
-              widget.metadataService.setRatingForImage(imageId, newRating);
-              setState(() {}); // Actualiza el icono de estrella
-            },
+          AnteriorImagenIntent: CallbackAction<AnteriorImagenIntent>(
+            onInvoke: (intent) => _irAAnterior(),
           ),
+        },
+        child: Focus(
+          autofocus: true, // Importante para que detecte el teclado al instante
+          child: Scaffold(
+            backgroundColor: Colors.black,
+            appBar: AppBar(
+              backgroundColor: Colors.black,
+              elevation: 0,
+              // --- AQUÍ AGREGAMOS EL NOMBRE DEL ARCHIVO ---
+              title: Text(
+                p.basename(currentFile.path),
+                style: const TextStyle(color: Colors.white, fontSize: 16),
+              ),
+              leading: IconButton(
+                icon: const Icon(Icons.close, color: Colors.white),
+                onPressed: widget.onClose,
+              ),
+              actions: [
+                // 1. Botón de Etiquetas
+                IconButton(
+                  icon: const Icon(Icons.label_outline, color: Colors.white),
+                  tooltip: 'Etiquetas',
+                  onPressed: () {
+                    showDialog(
+                      context: context,
+                      builder: (context) => TagEditorDialog(
+                        imageIds: [imageId],
+                        metadataService: widget.metadataService,
+                      ),
+                    ).then((_) => setState(() {})); // Refresca la vista si cambian las etiquetas
+                  },
+                ),
+                
+                // 2. Menú de Calificación (Estrellas)
+                PopupMenuButton<int>(
+                  icon: currentRating > 0 
+                      ? const Icon(Icons.star, color: Colors.amber)
+                      : const Icon(Icons.star_outline, color: Colors.white),
+                  tooltip: 'Calificación',
+                  color: const Color(0xFF424242),
+                  itemBuilder: (context) => List.generate(6, (index) {
+                    return PopupMenuItem(
+                      value: index,
+                      child: Row(
+                        children: [
+                          if (index == 0)
+                            const Text("Sin calificar", style: TextStyle(color: Colors.white))
+                          else
+                            RatingStarsDisplay(rating: index, iconSize: 20),
+                        ],
+                      ),
+                    );
+                  }),
+                  onSelected: (newRating) {
+                    widget.metadataService.setRatingForImage(imageId, newRating);
+                    setState(() {}); // Actualiza el icono de estrella
+                  },
+                ),
 
-          // 3. Botón de Exportar
-          IconButton(
-            icon: const Icon(Icons.download_for_offline_outlined, color: Colors.white),
-            tooltip: 'Exportar',
-            onPressed: _exportCurrentImage,
-          ),
-        ],
-      ),
-      body: Stack(
-        alignment: Alignment.center,
-        children: [
-          PageView.builder(
-            controller: _pageController,
-            itemCount: widget.imageFiles.length,
-            onPageChanged: (index) {
-              setState(() {
-                _currentIndex = index;
-              });
-            },
-            itemBuilder: (context, index) {
-              final imageFile = widget.imageFiles[index];
-              final bool isCurrentPage = index == _currentIndex;
-              
-              final bool isVideo = _isVideo(imageFile.path);
-              if (isVideo) {
-                // Retornamos el video SIN Hero para evitar el congelamiento
-                return VideoViewerWidget(videoFile: imageFile, isActive: isCurrentPage,);
-              }
-              return Hero(
-                tag: isCurrentPage ? imageFile.path : '${imageFile.path}_disabled',
-                child: InteractiveViewer(
-                  panEnabled: false,
-                  minScale: 1.0,
-                  maxScale: 4.0,
-                  child: Image.file(
-                    imageFile,
-                    fit: BoxFit.contain,
+                // 3. Botón de Exportar
+                IconButton(
+                  icon: const Icon(Icons.download_for_offline_outlined, color: Colors.white),
+                  tooltip: 'Exportar',
+                  onPressed: _exportCurrentImage,
+                ),
+              ],
+            ),
+            body: Stack(
+              alignment: Alignment.center,
+              children: [
+                PageView.builder(
+                  controller: _pageController,
+                  itemCount: widget.imageFiles.length,
+                  onPageChanged: (index) {
+                    setState(() {
+                      _currentIndex = index;
+                    });
+                  },
+                  itemBuilder: (context, index) {
+                    final imageFile = widget.imageFiles[index];
+                    final bool isCurrentPage = index == _currentIndex;
+                    
+                    final bool isVideo = _isVideo(imageFile.path);
+                    if (isVideo) {
+                      // Retornamos el video SIN Hero para evitar el congelamiento
+                      return VideoViewerWidget(videoFile: imageFile, isActive: isCurrentPage,);
+                    }
+                    return Hero(
+                      tag: isCurrentPage ? imageFile.path : '${imageFile.path}_disabled',
+                      child: InteractiveViewer(
+                        panEnabled: false,
+                        minScale: 1.0,
+                        maxScale: 4.0,
+                        child: Image.file(
+                          imageFile,
+                          fit: BoxFit.contain,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                if (_currentIndex > 0)
+                  Positioned(
+                    left: 10,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.5),
+                        shape: BoxShape.circle,
+                      ),
+                      child: IconButton(
+                        icon: const Icon(Icons.arrow_back_ios_new,
+                            color: Colors.white),
+                        onPressed: _irAAnterior, // Usamos la función nueva
+                      ),
+                    ),
                   ),
-                ),
-              );
-            },
+                if (_currentIndex < widget.imageFiles.length - 1)
+                  Positioned(
+                    right: 10,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.5),
+                        shape: BoxShape.circle,
+                      ),
+                      child: IconButton(
+                        icon:
+                            const Icon(Icons.arrow_forward_ios, color: Colors.white),
+                        onPressed: _irASiguiente, // Usamos la función nueva
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
-          if (_currentIndex > 0)
-            Positioned(
-              left: 10,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.5),
-                  shape: BoxShape.circle,
-                ),
-                child: IconButton(
-                  icon: const Icon(Icons.arrow_back_ios_new,
-                      color: Colors.white),
-                  onPressed: () {
-                    _pageController.previousPage(
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeInOut,
-                    );
-                  },
-                ),
-              ),
-            ),
-          if (_currentIndex < widget.imageFiles.length - 1)
-            Positioned(
-              right: 10,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.5),
-                  shape: BoxShape.circle,
-                ),
-                child: IconButton(
-                  icon:
-                      const Icon(Icons.arrow_forward_ios, color: Colors.white),
-                  onPressed: () {
-                    _pageController.nextPage(
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeInOut,
-                    );
-                  },
-                ),
-              ),
-            ),
-        ],
+        ),
       ),
     );
   }
