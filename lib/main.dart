@@ -2365,7 +2365,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
               final bool isVideo = _isVideo(imageFile.path);
               if (isVideo) {
                 // Retornamos el video SIN Hero para evitar el congelamiento
-                return VideoViewerWidget(videoFile: imageFile);
+                return VideoViewerWidget(videoFile: imageFile, isActive: isCurrentPage,);
               }
               return Hero(
                 tag: isCurrentPage ? imageFile.path : '${imageFile.path}_disabled',

@@ -6,7 +6,8 @@ import 'package:window_manager/window_manager.dart';
 
 class VideoViewerWidget extends StatefulWidget {
   final File videoFile;
-  const VideoViewerWidget({super.key, required this.videoFile});
+  final bool isActive;
+  const VideoViewerWidget({super.key, required this.videoFile, required this.isActive,});
 
   @override
   State<VideoViewerWidget> createState() => _VideoViewerWidgetState();
@@ -24,8 +25,21 @@ class _VideoViewerWidgetState extends State<VideoViewerWidget> with WindowListen
     windowManager.addListener(this);
     _initWindowState();
     
-    _player.open(Media(widget.videoFile.path));
+    _player.open(Media(widget.videoFile.path), play: widget.isActive);
     _player.setPlaylistMode(PlaylistMode.single);
+  }
+
+  @override
+  void didUpdateWidget(VideoViewerWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Si el estado de visibilidad cambió...
+    if (oldWidget.isActive != widget.isActive) {
+      if (widget.isActive) {
+        _player.play(); // Reproduce si acabamos de deslizar hacia este video
+      } else {
+        _player.pause(); // Pausa si nos fuimos a otra imagen/video
+      }
+    }
   }
 
   Future<void> _initWindowState() async {
