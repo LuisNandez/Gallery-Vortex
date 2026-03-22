@@ -80,13 +80,14 @@ void main(List<String> args) async {
   runApp(MyApp(startHidden: startHidden));
 }
 
-class SiguienteImagenIntent extends Intent {
-  const SiguienteImagenIntent();
-}
-
-class AnteriorImagenIntent extends Intent {
-  const AnteriorImagenIntent();
-}
+class SiguienteImagenIntent extends Intent { const SiguienteImagenIntent(); }
+class AnteriorImagenIntent extends Intent { const AnteriorImagenIntent(); }
+class GridUpIntent extends Intent { const GridUpIntent(); }
+class GridDownIntent extends Intent { const GridDownIntent(); }
+class GridLeftIntent extends Intent { const GridLeftIntent(); }
+class GridRightIntent extends Intent { const GridRightIntent(); }
+class GridEnterIntent extends Intent { const GridEnterIntent(); }
+class CloseViewerIntent extends Intent { const CloseViewerIntent(); }
 
 class MyApp extends StatelessWidget {
   final bool startHidden; // <-- NUEVO
@@ -325,6 +326,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   Set<FileSystemEntity> _selectedItems = {};
   static List<FileSystemEntity> _clipboard = [];
   static bool _isCutOperation = false;
+
+  int _focusedIndex = -1;
 
   bool get isWatcherPaused => _isWatcherPaused;
 
@@ -892,6 +895,39 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     await _loadVaultContents(quiet: true);
   }
 
+  void _navegarGrid(int delta) {
+    if (_vaultContents.isEmpty) return;
+
+    setState(() {
+      if (_focusedIndex == -1 || _selectedItems.isEmpty) {
+        _focusedIndex = 0;
+      } else {
+        _focusedIndex += delta;
+      }
+
+      if (_focusedIndex < 0) _focusedIndex = 0;
+      if (_focusedIndex >= _vaultContents.length) {
+        _focusedIndex = _vaultContents.length - 1;
+      }
+
+      final entity = _vaultContents[_focusedIndex];
+      _selectedItems = {entity};
+      _shiftSelectionAnchorIndex = _focusedIndex;
+    });
+
+    _scrollToFocusedItem(); // Usamos la función reparada
+  }
+
+  void _abrirSeleccionado() {
+    if (_focusedIndex != -1 && _focusedIndex < _vaultContents.length) {
+      final entity = _vaultContents[_focusedIndex];
+      // Simulamos el doble clic para abrir la carpeta o la imagen a pantalla completa
+      _onItemTap(entity, isDoubleClick: true);
+    } else if (_selectedItems.length == 1) {
+      _onItemTap(_selectedItems.first, isDoubleClick: true);
+    }
+  }
+
   void _showContextMenu(BuildContext context, Offset position) {
     _hideContextMenu();
     final screenSize = MediaQuery.of(context).size;
@@ -1067,22 +1103,59 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     }
   }
   
-  void _showFullScreenViewer(List<File> imageFiles, int initialIndex) {
+  void _showFullScreenViewer(List<File> imageFiles, int initialIndex) async {
     _hideContextMenu();
     
-    Navigator.push(
+    // NUEVO: Esperamos a que la pantalla completa se cierre y nos devuelva el índice
+    final returnedIndex = await Navigator.push<int>(
       context,
       MaterialPageRoute(
         builder: (context) => FullScreenImageViewer(
           imageFiles: imageFiles,
           initialIndex: initialIndex,
           exportCallback: (file) async => await _handleSingleExport(file),
-          onClose: () => Navigator.pop(context), // Cierra la pantalla de forma nativa
+          onClose: () => Navigator.pop(context), 
           metadataService: _metadataService,
           vaultRootPath: _vaultRootDir.path,
         ),
       ),
     );
+
+    // NUEVO: Sincronizamos la selección al volver
+    if (returnedIndex != null) {
+      final lastViewedFile = imageFiles[returnedIndex];
+      // Buscamos su posición real en la cuadrícula (ya que la cuadrícula incluye carpetas)
+      final indexInVault = _vaultContents.indexWhere((e) => e.path == lastViewedFile.path);
+      
+      if (indexInVault != -1) {
+        setState(() {
+          _focusedIndex = indexInVault;
+          _selectedItems = {lastViewedFile};
+          _shiftSelectionAnchorIndex = indexInVault;
+        });
+        
+        // Esperamos un instante minúsculo para asegurarnos de que el recuadro se 
+        // haya pintado antes de scrollear hacia él
+        Future.delayed(const Duration(milliseconds: 50), () {
+          _scrollToFocusedItem();
+        });
+      }
+    }
+  }
+
+  // NUEVO: Método optimizado de Scroll
+  void _scrollToFocusedItem() {
+    final key = _itemKeys[_focusedIndex];
+    if (key != null && key.currentContext != null) {
+      Scrollable.ensureVisible(
+        key.currentContext!,
+        alignment: 0.5, 
+        // LA MAGIA AQUÍ: Reducimos la duración casi a cero (o usamos cero absoluto).
+        // Al quitar la animación larga de 150ms, las animaciones ya no "chocan" 
+        // cuando mantienes presionada la flecha, y el scroll nunca se pierde.
+        duration: Duration.zero, 
+      );
+    }
   }
 
   void _onItemTap(FileSystemEntity entity, {bool isDoubleClick = false}) {
@@ -1127,6 +1200,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                     .contains(LogicalKeyboardKey.metaRight)));
 
     setState(() {
+      _focusedIndex = index;
       if (isShiftPressed) {
         if (_shiftSelectionAnchorIndex == null) {
           _shiftSelectionAnchorIndex = index;
@@ -1612,28 +1686,63 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
 
   Widget _buildFileExplorerGrid() {
-    return Scrollbar(
-      controller: _scrollController,
-      thumbVisibility: true,
-      child: GridView.builder(
-        key: _gridDetectorKey,
-        controller: _scrollController,
-        padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
-        gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-          maxCrossAxisExtent: _thumbnailExtent,
-          mainAxisSpacing: 8.0,
-          crossAxisSpacing: 8.0,
-        ),
-        itemCount: _vaultContents.length,
-        itemBuilder: (context, index) {
-          final entity = _vaultContents[index];
-          _itemKeys.putIfAbsent(index, () => GlobalKey());
-          return KeyedSubtree(
-            key: _itemKeys[index],
-            child: _buildDraggableItem(entity, index),
-          );
-        },
-      ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Calculamos cuántas columnas hay actualmente en pantalla
+        // El padding horizontal total es 48.0 (24.0 a cada lado)
+        double usableWidth = constraints.maxWidth - 48.0;
+        int columns = (usableWidth / _thumbnailExtent).ceil();
+        if (columns < 1) columns = 1;
+
+        return Shortcuts(
+          shortcuts: <ShortcutActivator, Intent>{
+            const SingleActivator(LogicalKeyboardKey.arrowUp): const GridUpIntent(),
+            const SingleActivator(LogicalKeyboardKey.arrowDown): const GridDownIntent(),
+            const SingleActivator(LogicalKeyboardKey.arrowLeft): const GridLeftIntent(),
+            const SingleActivator(LogicalKeyboardKey.arrowRight): const GridRightIntent(),
+            const SingleActivator(LogicalKeyboardKey.enter): const GridEnterIntent(),
+            const SingleActivator(LogicalKeyboardKey.numpadEnter): const GridEnterIntent(),
+          },
+          child: Actions(
+            actions: <Type, Action<Intent>>{
+              // Las flechas Izquierda/Derecha mueven de 1 en 1
+              GridLeftIntent: CallbackAction<GridLeftIntent>(onInvoke: (i) => _navegarGrid(-1)),
+              GridRightIntent: CallbackAction<GridRightIntent>(onInvoke: (i) => _navegarGrid(1)),
+              // Las flechas Arriba/Abajo saltan una fila entera (suman/restan las columnas)
+              GridUpIntent: CallbackAction<GridUpIntent>(onInvoke: (i) => _navegarGrid(-columns)),
+              GridDownIntent: CallbackAction<GridDownIntent>(onInvoke: (i) => _navegarGrid(columns)),
+              // Enter abre el archivo
+              GridEnterIntent: CallbackAction<GridEnterIntent>(onInvoke: (i) => _abrirSeleccionado()),
+            },
+            child: Focus(
+              autofocus: true,
+              child: Scrollbar(
+                controller: _scrollController,
+                thumbVisibility: true,
+                child: GridView.builder(
+                  key: _gridDetectorKey,
+                  controller: _scrollController,
+                  padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
+                  gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                    maxCrossAxisExtent: _thumbnailExtent,
+                    mainAxisSpacing: 8.0,
+                    crossAxisSpacing: 8.0,
+                  ),
+                  itemCount: _vaultContents.length,
+                  itemBuilder: (context, index) {
+                    final entity = _vaultContents[index];
+                    _itemKeys.putIfAbsent(index, () => GlobalKey());
+                    return KeyedSubtree(
+                      key: _itemKeys[index],
+                      child: _buildDraggableItem(entity, index),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -2320,6 +2429,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
       shortcuts: <ShortcutActivator, Intent>{
         const SingleActivator(LogicalKeyboardKey.arrowRight): const SiguienteImagenIntent(),
         const SingleActivator(LogicalKeyboardKey.arrowLeft): const AnteriorImagenIntent(),
+        const SingleActivator(LogicalKeyboardKey.escape): const CloseViewerIntent(),
       },
       child: Actions(
         actions: <Type, Action<Intent>>{
@@ -2328,6 +2438,9 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
           ),
           AnteriorImagenIntent: CallbackAction<AnteriorImagenIntent>(
             onInvoke: (intent) => _irAAnterior(),
+          ),
+          CloseViewerIntent: CallbackAction<CloseViewerIntent>(
+            onInvoke: (intent) => Navigator.of(context).pop(_currentIndex),
           ),
         },
         child: Focus(
@@ -2344,7 +2457,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
               ),
               leading: IconButton(
                 icon: const Icon(Icons.close, color: Colors.white),
-                onPressed: widget.onClose,
+                onPressed: () => Navigator.of(context).pop(_currentIndex),
               ),
               actions: [
                 // 1. Botón de Etiquetas
