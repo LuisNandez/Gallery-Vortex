@@ -217,8 +217,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
     }
   }
 
-  // --- NUEVOS LISTENERS DE VENTANA ---
-  @override
   void onWindowHide() {
     setState(() {
       _isWindowVisible = false;
@@ -227,7 +225,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
     });
   }
 
-  @override
   void onWindowShow() {
     setState(() {
       _isWindowVisible = true;
@@ -325,7 +322,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   // State for selection and clipboard
   Set<FileSystemEntity> _selectedItems = {};
   static List<FileSystemEntity> _clipboard = [];
-  static bool _isCutOperation = false;
 
   int _focusedIndex = -1;
 
@@ -866,7 +862,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     if (_selectedItems.isEmpty) return;
     setState(() {
       _VaultExplorerScreenState._clipboard = _selectedItems.toList();
-      _VaultExplorerScreenState._isCutOperation = true;
       _selectedItems.clear();
     });
     ScaffoldMessenger.of(context).showSnackBar(
@@ -889,7 +884,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     
     setState(() {
       _VaultExplorerScreenState._clipboard = [];
-      _VaultExplorerScreenState._isCutOperation = false;
     });
     
     await _loadVaultContents(quiet: true);
@@ -1691,7 +1685,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         // Calculamos cuántas columnas hay actualmente en pantalla
         // El padding horizontal total es 48.0 (24.0 a cada lado)
         double usableWidth = constraints.maxWidth - 48.0;
-        int columns = (usableWidth / _thumbnailExtent).ceil();
+        int columns = (usableWidth / (_thumbnailExtent + 8.0)).ceil();
         if (columns < 1) columns = 1;
 
         return Shortcuts(
