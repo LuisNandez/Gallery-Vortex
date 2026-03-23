@@ -1100,6 +1100,25 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   void _showFullScreenViewer(List<File> imageFiles, int initialIndex) async {
     _hideContextMenu();
     
+    final tappedFile = imageFiles[initialIndex];
+    final initialIndexInVault = _vaultContents.indexWhere((e) => e.path == tappedFile.path);
+
+    if (initialIndexInVault != -1) {
+      setState(() {
+        _focusedIndex = initialIndexInVault;
+        _selectedItems = {tappedFile};
+        _shiftSelectionAnchorIndex = initialIndexInVault;
+      });
+
+      // Esperamos 350ms a que la animación de entrada (Hero/Ruta) termine 
+      // para centrar la cuadrícula de fondo de manera invisible.
+      Future.delayed(const Duration(milliseconds: 350), () {
+        if (mounted) {
+          _scrollToFocusedItem(animate: false);
+        }
+      });
+    }
+
     // NUEVO: Esperamos a que la pantalla completa se cierre y nos devuelva el índice
     final returnedIndex = await Navigator.push<int>(
       context,
@@ -1111,6 +1130,20 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           onClose: () => Navigator.pop(context), 
           metadataService: _metadataService,
           vaultRootPath: _vaultRootDir.path,
+          onPageChangedCallback: (fileIndex) {
+            final lastViewedFile = imageFiles[fileIndex];
+            final indexInVault = _vaultContents.indexWhere((e) => e.path == lastViewedFile.path);
+            
+            if (indexInVault != -1) {
+              setState(() {
+                _focusedIndex = indexInVault;
+                _selectedItems = {lastViewedFile};
+                _shiftSelectionAnchorIndex = indexInVault;
+              });
+              // Movemos la cuadrícula oculta sin animación para estar listos
+              _scrollToFocusedItem(animate: false);
+            }
+          },
         ),
       ),
     );
@@ -1135,20 +1168,67 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         });
       }
     }
+
+    if (mounted) {
+      Future.delayed(const Duration(milliseconds: 50), () {
+        _scrollToFocusedItem(animate: true); 
+      });
+    }
   }
 
   // NUEVO: Método optimizado de Scroll
-  void _scrollToFocusedItem() {
+  void _scrollToFocusedItem({bool animate = false}) {
+    if (_focusedIndex < 0 || _focusedIndex >= _vaultContents.length) return;
+
     final key = _itemKeys[_focusedIndex];
+    
+    // CASO 1: El elemento ya está dibujado en memoria (visible o cerca)
     if (key != null && key.currentContext != null) {
       Scrollable.ensureVisible(
         key.currentContext!,
         alignment: 0.5, 
-        // LA MAGIA AQUÍ: Reducimos la duración casi a cero (o usamos cero absoluto).
-        // Al quitar la animación larga de 150ms, las animaciones ya no "chocan" 
-        // cuando mantienes presionada la flecha, y el scroll nunca se pierde.
-        duration: Duration.zero, 
+        duration: animate ? const Duration(milliseconds: 300) : Duration.zero,
+        curve: Curves.easeInOut,
       );
+    } 
+    // CASO 2: El elemento está tan lejos que Flutter lo destruyó para ahorrar RAM
+    else {
+      // 1. Calculamos matemáticamente en qué fila debería estar
+      final usableWidth = MediaQuery.of(context).size.width - 48.0; 
+      int crossAxisCount = (usableWidth / _thumbnailExtent).ceil();
+      if (crossAxisCount < 1) crossAxisCount = 1;
+
+      int row = _focusedIndex ~/ crossAxisCount;
+      double estimatedOffset = row * (_thumbnailExtent + 8.0); 
+      
+      // 2. Calculamos el salto para que quede centrado en la pantalla
+      double viewportHeight = _scrollController.position.viewportDimension;
+      double targetOffset = estimatedOffset - (viewportHeight / 2) + (_thumbnailExtent / 2);
+      targetOffset = targetOffset.clamp(0.0, _scrollController.position.maxScrollExtent);
+
+      // 3. Saltamos/Animamos a esa zona
+      if (animate) {
+        _scrollController.animateTo(
+          targetOffset, 
+          duration: const Duration(milliseconds: 300), 
+          curve: Curves.easeInOut
+        ).then((_) {
+          // Una vez cerca, el elemento ya se dibujó. Hacemos el ajuste milimétrico final.
+          final newKey = _itemKeys[_focusedIndex];
+          if (newKey?.currentContext != null) {
+            Scrollable.ensureVisible(newKey!.currentContext!, alignment: 0.5, duration: Duration.zero);
+          }
+        });
+      } else {
+        _scrollController.jumpTo(targetOffset);
+        // Esperamos 1 frame a que Flutter construya los widgets de esa zona
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          final newKey = _itemKeys[_focusedIndex];
+          if (newKey?.currentContext != null) {
+            Scrollable.ensureVisible(newKey!.currentContext!, alignment: 0.5, duration: Duration.zero);
+          }
+        });
+      }
     }
   }
 
@@ -2261,6 +2341,11 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
       onSecondaryTapUp: widget.onSecondaryTapUp,
       child: Hero(
         tag: widget.imageFile.path,
+        placeholderBuilder: (context, heroSize, child) {
+          // Esto obliga a la cuadrícula a seguir mostrando la miniatura 
+          // intacta, eliminando el parpadeo negro por completo.
+          return child; 
+        },
         child: Container(
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(8.0),
@@ -2356,6 +2441,7 @@ class FullScreenImageViewer extends StatefulWidget {
   final VoidCallback onClose;
   final MetadataService metadataService;
   final String vaultRootPath;
+  final ValueChanged<int>? onPageChangedCallback;
 
   const FullScreenImageViewer({
     super.key,
@@ -2365,6 +2451,7 @@ class FullScreenImageViewer extends StatefulWidget {
     required this.onClose,
     required this.metadataService,
     required this.vaultRootPath,
+    this.onPageChangedCallback,
   });
 
   @override
@@ -2515,6 +2602,9 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                     setState(() {
                       _currentIndex = index;
                     });
+                    if (widget.onPageChangedCallback != null) {
+                      widget.onPageChangedCallback!(index);
+                    }
                   },
                   itemBuilder: (context, index) {
                     final imageFile = widget.imageFiles[index];
