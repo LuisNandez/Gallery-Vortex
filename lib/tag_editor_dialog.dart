@@ -73,6 +73,7 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
             // --- Campo de texto con autocompletado ---
             TypeAheadField<String>(
               controller: _typeAheadController,
+              emptyBuilder: (context) => const SizedBox.shrink(),
               suggestionsCallback: (pattern) {
                 final allTags = widget.metadataService.getAllTags();
                 if (pattern.isEmpty) {

@@ -1059,24 +1059,35 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   
   void _showRatingMenu(BuildContext context, Offset position) {
     final RenderBox overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+
+    int? currentRating;
+    final selectedFiles = _selectedItems.whereType<File>().toList();
+    if (selectedFiles.isNotEmpty) {
+      final firstId = p.relative(selectedFiles.first.path, from: _vaultRootDir.path);
+      currentRating = _metadataService.getMetadataForImage(firstId).rating;
+      for (var file in selectedFiles.skip(1)) {
+        final id = p.relative(file.path, from: _vaultRootDir.path);
+        if (_metadataService.getMetadataForImage(id).rating != currentRating) {
+          currentRating = null; 
+          break;
+        }
+      }
+    }
   
     showMenu(
       context: context,
+      initialValue: currentRating,
       position: RelativeRect.fromRect(
         position & const Size(40, 40),
         Offset.zero & overlay.size,
       ),
       items: List.generate(6, (index) {
-        return PopupMenuItem(
+        return CheckedPopupMenuItem<int>(
           value: index,
-          child: Row(
-            children: [
-              if (index == 0)
-                const Text("Sin calificar")
-              else
-                RatingStarsDisplay(rating: index, iconSize: 20),
-            ],
-          ),
+          checked: index == currentRating, // Muestra la marca de verificación
+          child: index == 0
+              ? const Text("Sin calificar")
+              : RatingStarsDisplay(rating: index, iconSize: 20),
         );
       }),
     ).then((newRating) {
@@ -1159,12 +1170,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           _focusedIndex = indexInVault;
           _selectedItems = {lastViewedFile};
           _shiftSelectionAnchorIndex = indexInVault;
-        });
-        
-        // Esperamos un instante minúsculo para asegurarnos de que el recuadro se 
-        // haya pintado antes de scrollear hacia él
-        Future.delayed(const Duration(milliseconds: 50), () {
-          _scrollToFocusedItem();
         });
       }
     }
@@ -2560,22 +2565,19 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                 
                 // 2. Menú de Calificación (Estrellas)
                 PopupMenuButton<int>(
+                  initialValue: currentRating,
                   icon: currentRating > 0 
                       ? const Icon(Icons.star, color: Colors.amber)
                       : const Icon(Icons.star_outline, color: Colors.white),
                   tooltip: 'Calificación',
                   color: const Color(0xFF424242),
                   itemBuilder: (context) => List.generate(6, (index) {
-                    return PopupMenuItem(
+                    return CheckedPopupMenuItem<int>(
                       value: index,
-                      child: Row(
-                        children: [
-                          if (index == 0)
-                            const Text("Sin calificar", style: TextStyle(color: Colors.white))
-                          else
-                            RatingStarsDisplay(rating: index, iconSize: 20),
-                        ],
-                      ),
+                      checked: index == currentRating, // Muestra la palomita
+                      child: index == 0
+                          ? const Text("Sin calificar", style: TextStyle(color: Colors.white))
+                          : RatingStarsDisplay(rating: index, iconSize: 20),
                     );
                   }),
                   onSelected: (newRating) {
