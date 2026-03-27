@@ -1,10 +1,11 @@
+import 'dart:ui'; // Necesario para el efecto Blur
 import 'package:flutter/material.dart';
 import 'package:flutter_typeahead/flutter_typeahead.dart';
-import 'metadata_service.dart'; // Asegúrate de que importa el servicio correcto
+import 'metadata_service.dart'; 
 
 class TagEditorDialog extends StatefulWidget {
   final List<String> imageIds;
-  final MetadataService metadataService; // Usa el servicio de metadatos
+  final MetadataService metadataService;
 
   const TagEditorDialog({
     super.key,
@@ -23,8 +24,6 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
   @override
   void initState() {
     super.initState();
-    // Si solo hay una imagen, mostramos sus etiquetas.
-    // Si hay varias, mostramos solo las etiquetas que tienen en COMÚN.
     if (widget.imageIds.length == 1) {
       _currentTags = widget.metadataService.getMetadataForImage(widget.imageIds.first).tags.toSet();
     } else {
@@ -62,70 +61,104 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text('Etiquetas para ${widget.imageIds.length} imagen(es)'),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // --- Campo de texto con autocompletado ---
-            TypeAheadField<String>(
-              controller: _typeAheadController,
-              emptyBuilder: (context) => const SizedBox.shrink(),
-              suggestionsCallback: (pattern) {
-                final allTags = widget.metadataService.getAllTags();
-                if (pattern.isEmpty) {
-                  return [];
-                }
-                return allTags
-                    .where((tag) => tag.toLowerCase().contains(pattern.toLowerCase()))
-                    .toList();
-              },
-              itemBuilder: (context, suggestion) {
-                return ListTile(title: Text(suggestion));
-              },
-              onSelected: (suggestion) {
-                _addTag(suggestion);
-              },
-              builder: (context, controller, focusNode) {
-                return TextField(
-                  controller: controller,
-                  focusNode: focusNode,
-                  autofocus: true,
-                  onSubmitted: _addTag,
-                  decoration: const InputDecoration(
-                    border: OutlineInputBorder(),
-                    labelText: 'Añadir etiqueta',
-                  ),
-                );
-              },
+    return Dialog(
+      backgroundColor: Colors.transparent, // Hacemos el fondo nativo invisible
+      elevation: 0, // Quitamos las sombras nativas
+      insetPadding: const EdgeInsets.all(20),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12.0),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), // EFECTO CRISTAL
+          child: Container(
+            width: 400, // Ancho fijo estilo panel de Mac
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: const Color(0xFF252525).withOpacity(0.65), // Translúcido
+              border: Border.all(color: Colors.white12, width: 0.5), // Borde súper fino
             ),
-            const SizedBox(height: 16),
-            // --- Lista de etiquetas actuales (Chips) ---
-            if (_currentTags.isEmpty)
-              const Text('No hay etiquetas asignadas.')
-            else
-              Wrap(
-                spacing: 8.0,
-                runSpacing: 4.0,
-                children: _currentTags.map((tag) {
-                  return Chip(
-                    label: Text(tag),
-                    onDeleted: () => _removeTag(tag),
-                  );
-                }).toList(),
-              ),
-          ],
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Etiquetas para ${widget.imageIds.length} imagen(es)',
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.white)
+                ),
+                const SizedBox(height: 16),
+                
+                // --- Campo de texto estilo Buscador Mac ---
+                TypeAheadField<String>(
+                  controller: _typeAheadController,
+                  emptyBuilder: (context) => const SizedBox.shrink(),
+                  suggestionsCallback: (pattern) {
+                    final allTags = widget.metadataService.getAllTags();
+                    if (pattern.isEmpty) return [];
+                    return allTags
+                        .where((tag) => tag.toLowerCase().contains(pattern.toLowerCase()))
+                        .toList();
+                  },
+                  itemBuilder: (context, suggestion) {
+                    return ListTile(title: Text(suggestion, style: const TextStyle(color: Colors.white)));
+                  },
+                  onSelected: (suggestion) => _addTag(suggestion),
+                  builder: (context, controller, focusNode) {
+                    return TextField(
+                      controller: controller,
+                      focusNode: focusNode,
+                      autofocus: true,
+                      onSubmitted: _addTag,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        filled: true,
+                        fillColor: const Color(0xFF1C1C1E).withOpacity(0.8), // Fondo oscuro insertado
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide.none,
+                        ),
+                        hintText: 'Añadir etiqueta...',
+                        hintStyle: const TextStyle(color: Colors.white54),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 20),
+                
+                // --- Lista de etiquetas actuales (Chips estilo píldora) ---
+                if (_currentTags.isEmpty)
+                  const Text('No hay etiquetas asignadas.', style: TextStyle(color: Colors.white54))
+                else
+                  Wrap(
+                    spacing: 8.0,
+                    runSpacing: 8.0,
+                    children: _currentTags.map((tag) {
+                      return Chip(
+                        label: Text(tag, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.white)),
+                        backgroundColor: const Color(0xFF3A3A3C).withOpacity(0.8),
+                        side: BorderSide.none,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
+                        deleteIcon: const Icon(Icons.cancel, size: 16, color: Colors.white54),
+                        onDeleted: () => _removeTag(tag),
+                      );
+                    }).toList(),
+                  ),
+                const SizedBox(height: 24),
+                
+                // --- Botón de Cerrar estilo Cupertino ---
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    style: TextButton.styleFrom(foregroundColor: const Color(0xFF0A84FF)), // Azul Mac
+                    child: const Text('Cerrar', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cerrar'),
-        ),
-      ],
     );
   }
 }

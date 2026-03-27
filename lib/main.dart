@@ -16,6 +16,8 @@ import 'video_player_widget.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:local_notifier/local_notifier.dart';
+import 'dart:ui';
+import 'package:google_fonts/google_fonts.dart';
 
 // Imports de los nuevos archivos
 import 'metadata_service.dart';
@@ -98,11 +100,59 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'GVortex',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.deepPurple,
-          brightness: Brightness.dark,
-        ),
         useMaterial3: true,
+        brightness: Brightness.dark,
+        // Tipografía personalizada con Google Fonts (Inter) y colores adaptados al modo oscuro
+        textTheme: GoogleFonts.interTextTheme(
+          ThemeData.dark().textTheme,
+        ).apply(
+          bodyColor: Colors.white,
+          displayColor: Colors.white,
+        ),
+        // Paleta de colores estilo macOS Dark Mode
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xFF0A84FF), // Azul clásico de macOS
+          secondary: Color(0xFF5E5CE6), // Púrpura sutil
+          surface: Color(0xFF1E1E1E), // Gris oscuro para tarjetas/diálogos
+          background: Color(0xFF000000), // Fondo negro profundo
+        ),
+        scaffoldBackgroundColor: const Color(0xFF000000),
+        // Tipografía del sistema (San Francisco en Apple, Segoe en Windows)
+        fontFamily: Platform.isMacOS || Platform.isIOS ? '.SF Pro Text' : 'Segoe UI',
+        
+        // AppBars planos y translúcidos
+        appBarTheme: const AppBarThemeData(
+          backgroundColor: Color(0xE61C1C1E), // Gris muy oscuro con ligera transparencia
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          centerTitle: true,
+          iconTheme: IconThemeData(color: Colors.white, size: 20),
+          titleTextStyle: TextStyle(
+            color: Colors.white,
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            letterSpacing: -0.5,
+          ),
+        ),
+        
+        // Diálogos con bordes más suaves y sin sombras gigantes
+        dialogTheme: const DialogThemeData(
+          backgroundColor: Color(0xFF2C2C2E),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(12))),
+          elevation: 10,
+        ),
+        
+        // Menús emergentes (Dropdowns) estilo panel flotante
+        popupMenuTheme: PopupMenuThemeData(
+          color: const Color(0xFF2C2C2E),
+          elevation: 8,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: const BorderSide(color: Colors.white12, width: 0.5), // Borde finísimo
+          ),
+        ),
+        
+        dividerTheme: const DividerThemeData(color: Colors.white12, thickness: 0.5),
       ),
       home: AuthWrapper(startHidden: startHidden),
     );
@@ -357,6 +407,10 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   SortCriteria _currentSortCriteria = SortCriteria.date;
   bool _sortAscending = true; // true = más viejo/A-Z/más liviano primero
 
+  // NUEVAS VARIABLES PARA EL MENÚ DE FILTRO ESTILO MAC
+  final GlobalKey _sortButtonKey = GlobalKey();
+  OverlayEntry? _sortOverlay;
+
   bool _isSupportedFile(String filePath) {
   final ext = p.extension(filePath).toLowerCase();
   return _isImageFile(filePath) || ['.mp4', '.mov', '.avi', '.mkv'].contains(ext);
@@ -464,6 +518,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _folderNameController.dispose();
     _doubleTapTimer?.cancel();
     _hideContextMenu();
+    _sortOverlay?.remove();
     _scrollController.dispose();
     _notificationTimer?.cancel();
     super.dispose();
@@ -1038,17 +1093,26 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               bottom: bottom,
               left: left,
               right: right,
-              child: Material(
-                elevation: 4.0,
-                color: const Color(0xFF424242),
-                borderRadius: BorderRadius.circular(8.0),
-                child: IntrinsicWidth(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: items,
+              child: ClipRRect(
+              borderRadius: BorderRadius.circular(8.0),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), // Efecto Cristal
+                child: Material(
+                  elevation: 0,
+                  color: const Color(0xFF252525).withOpacity(0.65), // Fondo translúcido
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8.0),
+                    side: const BorderSide(color: Colors.white12, width: 0.5), // Borde sutil
+                  ),
+                  child: IntrinsicWidth(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: items,
+                    ),
                   ),
                 ),
               ),
+            ),
             ),
           ],
         );
@@ -1058,7 +1122,23 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
   
   void _showRatingMenu(BuildContext context, Offset position) {
-    final RenderBox overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final screenSize = MediaQuery.of(context).size;
+    const estimatedMenuWidth = 180.0;
+    const estimatedMenuHeight = 250.0;
+
+    double? top, bottom, left, right;
+
+    if (position.dy + estimatedMenuHeight > screenSize.height) {
+      bottom = screenSize.height - position.dy;
+    } else {
+      top = position.dy;
+    }
+
+    if (position.dx + estimatedMenuWidth > screenSize.width) {
+      right = screenSize.width - position.dx;
+    } else {
+      left = position.dx;
+    }
 
     int? currentRating;
     final selectedFiles = _selectedItems.whereType<File>().toList();
@@ -1074,31 +1154,75 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       }
     }
   
-    showMenu(
-      context: context,
-      initialValue: currentRating,
-      position: RelativeRect.fromRect(
-        position & const Size(40, 40),
-        Offset.zero & overlay.size,
-      ),
-      items: List.generate(6, (index) {
-        return CheckedPopupMenuItem<int>(
-          value: index,
-          checked: index == currentRating, // Muestra la marca de verificación
-          child: index == 0
-              ? const Text("Sin calificar")
-              : RatingStarsDisplay(rating: index, iconSize: 20),
+    // Generamos las opciones de calificación
+    final items = List.generate(6, (index) {
+      final isSelected = index == currentRating;
+      return InkWell(
+        onTap: () {
+          _hideContextMenu();
+          for (final entity in _selectedItems.whereType<File>()) {
+            final imageId = p.relative(entity.path, from: _vaultRootDir.path);
+            _metadataService.setRatingForImage(imageId, index);
+          }
+          setState(() {});
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+          child: Row(
+            children: [
+              // Espacio para la marca de verificación
+              Icon(isSelected ? Icons.check : null, size: 18, color: Colors.white), 
+              const SizedBox(width: 12),
+              if (index == 0)
+                const Text("Sin calificar", style: TextStyle(color: Colors.white))
+              else
+                RatingStarsDisplay(rating: index, iconSize: 20),
+            ],
+          ),
+        ),
+      );
+    });
+
+    // Construimos el menú flotante esmerilado
+    _contextMenuOverlay = OverlayEntry(
+      builder: (context) {
+        return Stack(
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: _hideContextMenu,
+                onSecondaryTap: _hideContextMenu,
+                child: Container(color: Colors.transparent),
+              ),
+            ),
+            Positioned(
+              top: top, bottom: bottom, left: left, right: right,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8.0),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), // Efecto Cristal
+                  child: Material(
+                    elevation: 0,
+                    color: const Color(0xFF252525).withOpacity(0.65), // Fondo translúcido
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8.0),
+                      side: const BorderSide(color: Colors.white12, width: 0.5),
+                    ),
+                    child: IntrinsicWidth(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: items,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
         );
-      }),
-    ).then((newRating) {
-  if (newRating != null) {
-    for (final entity in _selectedItems.whereType<File>()) {
-      final imageId = p.relative(entity.path, from: _vaultRootDir.path); // <-- Usamos el ID
-      _metadataService.setRatingForImage(imageId, newRating);
-    }
-    setState(() {});
-  }
-});
+      },
+    );
+    Overlay.of(context).insert(_contextMenuOverlay!);
   }
 
   void _hideContextMenu() {
@@ -1430,17 +1554,48 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       {required String title, required String content}) {
     return showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: Text(content),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancelar')),
-          TextButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Aceptar')),
-        ],
+      barrierColor: Colors.black.withOpacity(0.4), // Fondo oscuro sutil
+      builder: (context) => Dialog(
+        backgroundColor: Colors.transparent, // Transparente para ver el blur
+        elevation: 0,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(14.0),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20), // Efecto Cristal
+            child: Container(
+              width: 350,
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: const Color(0xFF252525).withOpacity(0.65), // Gris translúcido
+                border: Border.all(color: Colors.white12, width: 0.5),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white), textAlign: TextAlign.center),
+                  const SizedBox(height: 12),
+                  Text(content, style: const TextStyle(fontSize: 14, color: Colors.white70), textAlign: TextAlign.center),
+                  const SizedBox(height: 24),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(false),
+                        style: TextButton.styleFrom(foregroundColor: Colors.white70),
+                        child: const Text('Cancelar', style: TextStyle(fontWeight: FontWeight.w500)),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(true),
+                        style: TextButton.styleFrom(foregroundColor: const Color(0xFF0A84FF)), // Azul Mac
+                        child: const Text('Aceptar', style: TextStyle(fontWeight: FontWeight.w600)),
+                      ),
+                    ],
+                  )
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -1449,37 +1604,180 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _folderNameController.clear();
     return showDialog(
         context: context,
+        barrierColor: Colors.black.withOpacity(0.4),
         builder: (context) {
-          return AlertDialog(
-            title: const Text('Crear Nueva Carpeta'),
-            content: TextField(
-              controller: _folderNameController,
-              autofocus: true,
-              decoration:
-                  const InputDecoration(hintText: "Nombre de la carpeta"),
+          return Dialog(
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(14.0),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                child: Container(
+                  width: 350,
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF252525).withOpacity(0.65),
+                    border: Border.all(color: Colors.white12, width: 0.5),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('Crear Nueva Carpeta', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white)),
+                      const SizedBox(height: 16),
+                      TextField(
+                        controller: _folderNameController,
+                        autofocus: true,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          filled: true,
+                          fillColor: const Color(0xFF1C1C1E).withOpacity(0.8), // Campo de texto oscuro
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide.none,
+                          ),
+                          hintText: "Nombre de la carpeta",
+                          hintStyle: const TextStyle(color: Colors.white54),
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          TextButton(
+                            child: const Text('Cancelar', style: TextStyle(fontWeight: FontWeight.w500)),
+                            onPressed: () => Navigator.of(context).pop(),
+                            style: TextButton.styleFrom(foregroundColor: Colors.white70),
+                          ),
+                          TextButton(
+                            child: const Text('Crear', style: TextStyle(fontWeight: FontWeight.w600)),
+                            style: TextButton.styleFrom(foregroundColor: const Color(0xFF0A84FF)),
+                            onPressed: () async {
+                              if (_folderNameController.text.isNotEmpty) {
+                                final newDir = Directory(p.join(
+                                    _currentVaultDir.path, _folderNameController.text));
+                                if (!await newDir.exists()) {
+                                  await newDir.create();
+                                  if (mounted) Navigator.of(context).pop();
+                                  await _loadVaultContents(quiet: true);
+                                }
+                              }
+                            },
+                          ),
+                        ],
+                      )
+                    ],
+                  ),
+                ),
+              ),
             ),
-            actions: [
-              TextButton(
-                child: const Text('Cancelar'),
-                onPressed: () => Navigator.of(context).pop(),
-              ),
-              TextButton(
-                child: const Text('Crear'),
-                onPressed: () async {
-                  if (_folderNameController.text.isNotEmpty) {
-                    final newDir = Directory(p.join(
-                        _currentVaultDir.path, _folderNameController.text));
-                    if (!await newDir.exists()) {
-                      await newDir.create();
-                      if (mounted) Navigator.of(context).pop();
-                      await _loadVaultContents(quiet: true);
-                    }
-                  }
-                },
-              ),
-            ],
           );
         });
+  }
+
+  void _showSortMenu(BuildContext context) {
+    if (_sortOverlay != null) {
+      _sortOverlay?.remove();
+      _sortOverlay = null;
+      return;
+    }
+
+    final RenderBox? button = _sortButtonKey.currentContext?.findRenderObject() as RenderBox?;
+    if (button == null) return;
+    final position = button.localToGlobal(Offset.zero);
+
+    Widget buildMenuItem(String title, SortCriteria criteria) {
+      final isSelected = _currentSortCriteria == criteria;
+      return InkWell(
+        onTap: () async {
+          _sortOverlay?.remove();
+          _sortOverlay = null;
+          final prefs = await SharedPreferences.getInstance();
+          setState(() => _currentSortCriteria = criteria);
+          await prefs.setInt(_sortCriteriaKey, criteria.index);
+          await _loadVaultContents(quiet: true);
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+          child: Row(
+            children: [
+              Icon(isSelected ? Icons.check : null, size: 18, color: Colors.white),
+              const SizedBox(width: 12),
+              Text(title, style: const TextStyle(color: Colors.white)),
+            ],
+          ),
+        ),
+      );
+    }
+
+    _sortOverlay = OverlayEntry(
+      builder: (context) {
+        return Stack(
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: () {
+                  _sortOverlay?.remove();
+                  _sortOverlay = null;
+                },
+                child: Container(color: Colors.transparent),
+              ),
+            ),
+            Positioned(
+              top: position.dy + button.size.height + 8,
+              right: MediaQuery.of(context).size.width - position.dx - button.size.width,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8.0),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                  child: Material(
+                    elevation: 0,
+                    color: const Color(0xFF252525).withOpacity(0.65),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8.0),
+                      side: const BorderSide(color: Colors.white12, width: 0.5),
+                    ),
+                    child: IntrinsicWidth(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          buildMenuItem('Por fecha de ingreso', SortCriteria.date),
+                          buildMenuItem('Por nombre original', SortCriteria.name),
+                          buildMenuItem('Por tamaño de archivo', SortCriteria.size),
+                          const Divider(height: 1, color: Colors.white12),
+                          InkWell(
+                            onTap: () async {
+                              _sortOverlay?.remove();
+                              _sortOverlay = null;
+                              final prefs = await SharedPreferences.getInstance();
+                              setState(() => _sortAscending = !_sortAscending);
+                              await prefs.setBool(_sortAscendingKey, _sortAscending);
+                              await _loadVaultContents(quiet: true);
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                              child: Row(
+                                children: [
+                                  Icon(_sortAscending ? Icons.arrow_downward : Icons.arrow_upward, size: 18, color: Colors.white),
+                                  const SizedBox(width: 12),
+                                  Text(_sortAscending ? 'Orden Ascendente' : 'Orden Descendente', style: const TextStyle(color: Colors.white)),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+    Overlay.of(context).insert(_sortOverlay!);
   }
 
   // --- Build Methods ---
@@ -1515,57 +1813,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               onPressed: _restoreAllAndClear,
             ),
             if (!_isLoading && _vortexPath != null)
-            PopupMenuButton<String>(
+            if (!_isLoading && _vortexPath != null)
+            IconButton(
+              key: _sortButtonKey,
               icon: const Icon(Icons.sort),
               tooltip: 'Ordenar elementos',
-              color: const Color(0xFF424242),
-              onSelected: (value) async {
-                final prefs = await SharedPreferences.getInstance();
-                
-                if (value == 'asc_desc') {
-                  setState(() => _sortAscending = !_sortAscending);
-                  await prefs.setBool(_sortAscendingKey, _sortAscending);
-                } else {
-                  final selectedCriteria = SortCriteria.values.firstWhere((e) => e.name == value);
-                  setState(() => _currentSortCriteria = selectedCriteria);
-                  await prefs.setInt(_sortCriteriaKey, selectedCriteria.index);
-                }
-                
-                // Recargamos silenciosamente para aplicar el nuevo orden visualmente
-                await _loadVaultContents(quiet: true);
-              },
-              itemBuilder: (context) => [
-                CheckedPopupMenuItem(
-                  value: SortCriteria.date.name,
-                  checked: _currentSortCriteria == SortCriteria.date,
-                  child: const Text('Por fecha de ingreso'),
-                ),
-                CheckedPopupMenuItem(
-                  value: SortCriteria.name.name,
-                  checked: _currentSortCriteria == SortCriteria.name,
-                  child: const Text('Por nombre original'),
-                ),
-                CheckedPopupMenuItem(
-                  value: SortCriteria.size.name,
-                  checked: _currentSortCriteria == SortCriteria.size,
-                  child: const Text('Por tamaño de archivo'),
-                ),
-                const PopupMenuDivider(),
-                PopupMenuItem(
-                  value: 'asc_desc',
-                  child: Row(
-                    children: [
-                      Icon(
-                        _sortAscending ? Icons.arrow_downward : Icons.arrow_upward, 
-                        size: 20,
-                        color: Colors.white,
-                      ),
-                      const SizedBox(width: 12),
-                      Text(_sortAscending ? 'Orden Ascendente' : 'Orden Descendente'),
-                    ],
-                  ),
-                ),
-              ],
+              onPressed: () => _showSortMenu(context),
             ),
             IconButton(
             icon: const Icon(Icons.settings_outlined),
@@ -1593,11 +1846,19 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       ),
       floatingActionButton: widget.currentDirectory == null
           ? FloatingActionButton.extended(
+              elevation: 4, // Sombra más controlada
+              backgroundColor: const Color(0xFF2C2C2E), // Gris en lugar de color primario
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10), // Bordes menos redondos
+                side: const BorderSide(color: Colors.white12, width: 0.5),
+              ),
               onPressed: _selectVortexFolder,
-              label: Text(_vortexPath == null
-                  ? 'Seleccionar Vórtice'
-                  : 'Cambiar Vórtice'),
-              icon: const Icon(Icons.all_inclusive),
+              label: Text(
+                _vortexPath == null ? 'Seleccionar Vórtice' : 'Cambiar Vórtice',
+                style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 12),
+              ),
+              icon: const Icon(Icons.all_inclusive, size: 18),
             )
           : null,
     );
@@ -1728,7 +1989,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           },
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4.0),
-            child: Text(pathParts[i], style: const TextStyle(fontSize: 16)),
+            child: Text(pathParts[i], style: const TextStyle(fontSize: 14)),
           ),
         ),
       );
@@ -1752,7 +2013,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         Icon(icon, size: 80, color: Colors.white54),
         const SizedBox(height: 16),
         Text(title,
-            style: const TextStyle(fontSize: 18), textAlign: TextAlign.center),
+            style: const TextStyle(fontSize: 16), textAlign: TextAlign.center),
         const SizedBox(height: 8),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -1901,7 +2162,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                   ),
                   child: Text(
                     items.length.toString(),
-                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                    style: const TextStyle(color: Colors.white, fontSize: 10),
                   ),
                 ),
               ),
@@ -1927,17 +2188,18 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           },
           child: Container(
             decoration: BoxDecoration(
+              // Fondo gris translúcido para las carpetas
               color: isHovered
-                  ? Colors.deepPurple.withOpacity(0.6)
+                  ? Colors.white.withOpacity(0.1)
                   : isSelected
-                      ? Colors.deepPurple.withOpacity(0.4)
-                      : Colors.transparent,
+                      ? const Color(0xFF0A84FF).withOpacity(0.2) // Azul translúcido
+                      : Colors.white.withOpacity(0.04), 
               borderRadius: BorderRadius.circular(8.0),
               border: Border.all(
                 color: isHovered || isSelected
-                    ? Colors.deepPurpleAccent
+                    ? const Color(0xFF0A84FF) // Azul macOS
                     : Colors.transparent,
-                width: 2,
+                width: isSelected ? 2.5 : 1.5, // Ligeramente más grueso al seleccionar
               ),
             ),
             child: Column(
@@ -2355,9 +2617,18 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(8.0),
             border: Border.all(
-              color: widget.isSelected ? Colors.deepPurpleAccent : Colors.transparent,
-              width: 2,
+              color: widget.isSelected ? const Color(0xFF0A84FF) : Colors.transparent,
+              width: 2.5, // Borde de selección limpio
             ),
+            // Sombra sutil para dar relieve a las imágenes
+            boxShadow: [
+              if (!widget.isSelected)
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.3),
+                  blurRadius: 4,
+                  offset: const Offset(0, 2),
+                )
+            ],
           ),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(6.0),
@@ -2466,6 +2737,21 @@ class FullScreenImageViewer extends StatefulWidget {
 class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
   late PageController _pageController;
   late int _currentIndex;
+  final GlobalKey _ratingButtonKey = GlobalKey(); // Para saber dónde dibujar el menú
+  OverlayEntry? _ratingOverlay; // Para guardar el menú flotante
+
+  String _getCleanName(String path) {
+    String filename = p.basename(path);
+    if (filename.toLowerCase().endsWith('.vtx')) {
+      String base = p.basenameWithoutExtension(filename); // Quita el .vtx
+      int lastZero = base.lastIndexOf('0'); // Busca el inicio del cifrado
+      if (lastZero != -1) {
+        return base.substring(0, lastZero); // Retorna solo el nombre limpio
+      }
+      return base;
+    }
+    return filename;
+  }
 
   @override
   void initState() {
@@ -2482,8 +2768,87 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
 
   @override
   void dispose() {
+    _ratingOverlay?.remove();
     _pageController.dispose();
     super.dispose();
+  }
+
+  void _showFullScreenRatingMenu(BuildContext context, String imageId, int currentRating) {
+    if (_ratingOverlay != null) return;
+    
+    // Encontramos la posición exacta del botón en la barra superior
+    final RenderBox? button = _ratingButtonKey.currentContext?.findRenderObject() as RenderBox?;
+    if (button == null) return;
+    final position = button.localToGlobal(Offset.zero);
+    
+    final items = List.generate(6, (index) {
+      final isSelected = index == currentRating;
+      return InkWell(
+        onTap: () {
+          _ratingOverlay?.remove();
+          _ratingOverlay = null;
+          widget.metadataService.setRatingForImage(imageId, index);
+          setState(() {});
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+          child: Row(
+            children: [
+              Icon(isSelected ? Icons.check : null, size: 18, color: Colors.white),
+              const SizedBox(width: 12),
+              if (index == 0)
+                const Text("Sin calificar", style: TextStyle(color: Colors.white))
+              else
+                RatingStarsDisplay(rating: index, iconSize: 20),
+            ],
+          ),
+        ),
+      );
+    });
+
+    _ratingOverlay = OverlayEntry(
+      builder: (context) {
+        return Stack(
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: () {
+                  _ratingOverlay?.remove();
+                  _ratingOverlay = null;
+                },
+                child: Container(color: Colors.transparent),
+              ),
+            ),
+            Positioned(
+              // Posicionado justo debajo del botón
+              top: position.dy + button.size.height + 8, 
+              right: MediaQuery.of(context).size.width - position.dx - button.size.width,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8.0),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                  child: Material(
+                    elevation: 0,
+                    color: const Color(0xFF252525).withOpacity(0.65),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8.0),
+                      side: const BorderSide(color: Colors.white12, width: 0.5),
+                    ),
+                    child: IntrinsicWidth(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: items,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+    Overlay.of(context).insert(_ratingOverlay!);
   }
 
   // --- MÉTODOS DE NAVEGACIÓN ---
@@ -2540,8 +2905,8 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
               elevation: 0,
               // --- AQUÍ AGREGAMOS EL NOMBRE DEL ARCHIVO ---
               title: Text(
-                p.basename(currentFile.path),
-                style: const TextStyle(color: Colors.white, fontSize: 16),
+                _getCleanName(currentFile.path),
+                style: const TextStyle(color: Colors.white, fontSize: 14),
               ),
               leading: IconButton(
                 icon: const Icon(Icons.close, color: Colors.white),
@@ -2564,26 +2929,13 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                 ),
                 
                 // 2. Menú de Calificación (Estrellas)
-                PopupMenuButton<int>(
-                  initialValue: currentRating,
+                IconButton(
+                  key: _ratingButtonKey,
                   icon: currentRating > 0 
                       ? const Icon(Icons.star, color: Colors.amber)
                       : const Icon(Icons.star_outline, color: Colors.white),
                   tooltip: 'Calificación',
-                  color: const Color(0xFF424242),
-                  itemBuilder: (context) => List.generate(6, (index) {
-                    return CheckedPopupMenuItem<int>(
-                      value: index,
-                      checked: index == currentRating, // Muestra la palomita
-                      child: index == 0
-                          ? const Text("Sin calificar", style: TextStyle(color: Colors.white))
-                          : RatingStarsDisplay(rating: index, iconSize: 20),
-                    );
-                  }),
-                  onSelected: (newRating) {
-                    widget.metadataService.setRatingForImage(imageId, newRating);
-                    setState(() {}); // Actualiza el icono de estrella
-                  },
+                  onPressed: () => _showFullScreenRatingMenu(context, imageId, currentRating),
                 ),
 
                 // 3. Botón de Exportar
@@ -2615,7 +2967,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                     final bool isVideo = _isVideo(imageFile.path);
                     if (isVideo) {
                       // Retornamos el video SIN Hero para evitar el congelamiento
-                      return VideoViewerWidget(videoFile: imageFile, isActive: isCurrentPage,);
+                      return CustomVideoPlayer(videoFile: imageFile);
                     }
                     return Hero(
                       tag: isCurrentPage ? imageFile.path : '${imageFile.path}_disabled',
@@ -2800,8 +3152,8 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
   
   Widget _buildPinInputArea() {
     return SizedBox(
-      width: (_pinLength * 56).toDouble(),
-      height: 50,
+      width: (_pinLength * 57).toDouble(),
+      height: 55,
       child: Stack(
         alignment: Alignment.center,
         children: [
@@ -2987,69 +3339,75 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Ajustes'),
+        title: const Text('Ajustes', style: TextStyle(fontSize: 16)),
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               padding: const EdgeInsets.all(16.0),
               children: [
-                Text(
-                  'Comportamiento de la Aplicación',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        color: Theme.of(context).colorScheme.secondary,
-                        fontWeight: FontWeight.bold,
+                // TÍTULO DE SECCIÓN
+                const Padding(
+                  padding: EdgeInsets.only(left: 16, bottom: 8),
+                  child: Text('COMPORTAMIENTO', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                ),
+                // CAJA AGRUPADORA 1
+                Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1C1C1E),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Column(
+                    children: [
+                      RadioListTile<CloseAction>(
+                        title: const Text('Minimizar a la bandeja', style: TextStyle(fontSize: 13)),
+                        value: CloseAction.minimize,
+                        groupValue: _closeAction,
+                        onChanged: _setCloseAction,
+                        activeColor: const Color(0xFF0A84FF), // Azul Mac
                       ),
+                      const Divider(height: 1, indent: 16, color: Colors.white12),
+                      RadioListTile<CloseAction>(
+                        title: const Text('Cerrar la aplicación', style: TextStyle(fontSize: 13)),
+                        value: CloseAction.exit,
+                        groupValue: _closeAction,
+                        onChanged: _setCloseAction,
+                        activeColor: const Color(0xFF0A84FF),
+                      ),
+                    ],
+                  ),
                 ),
-                const Divider(height: 20),
-                ListTile(
-                  title: const Text('Al presionar el botón de cerrar (X)'),
-                  subtitle: Text(_closeAction == CloseAction.minimize
-                      ? 'Minimizar a la bandeja'
-                      : 'Cerrar la aplicación'),
-                ),
-                RadioListTile<CloseAction>(
-                  title: const Text('Minimizar a la bandeja'),
-                  value: CloseAction.minimize,
-                  groupValue: _closeAction,
-                  onChanged: _setCloseAction,
-                ),
-                RadioListTile<CloseAction>(
-                  title: const Text('Cerrar la aplicación'),
-                  subtitle: const Text('La aplicación se cerrará completamente.'),
-                  value: CloseAction.exit,
-                  groupValue: _closeAction,
-                  onChanged: _setCloseAction,
-                ),
+
                 const SizedBox(height: 24),
-                Text(
-                  'Inicio del Sistema',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        color: Theme.of(context).colorScheme.secondary,
-                        fontWeight: FontWeight.bold,
+
+                // TÍTULO DE SECCIÓN 2
+                const Padding(
+                  padding: EdgeInsets.only(left: 16, bottom: 8),
+                  child: Text('SISTEMA Y NOTIFICACIONES', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                ),
+                // CAJA AGRUPADORA 2
+                Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1C1C1E),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Column(
+                    children: [
+                      SwitchListTile.adaptive( // Adaptive da el estilo redondeado nativo
+                        title: const Text('Iniciar con el sistema', style: TextStyle(fontSize: 13)),
+                        value: _startup,
+                        onChanged: _setStartup,
+                        activeColor: const Color(0xFF32D74B), // Verde vibrante de Apple
                       ),
-                ),
-                const Divider(height: 20),
-                SwitchListTile(
-                  title: const Text('Iniciar con Windows'),
-                  subtitle: const Text('La app se iniciará automáticamente al encender el PC.'),
-                  value: _startup,
-                  onChanged: _setStartup,
-                ),
-                const SizedBox(height: 24),
-                Text(
-                  'Notificaciones',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        color: Theme.of(context).colorScheme.secondary,
-                        fontWeight: FontWeight.bold,
+                      const Divider(height: 1, indent: 16, color: Colors.white12),
+                      SwitchListTile.adaptive(
+                        title: const Text('Avisos en segundo plano', style: TextStyle(fontSize: 13)),
+                        value: _showNotifications,
+                        onChanged: _setShowNotifications,
+                        activeColor: const Color(0xFF32D74B), 
                       ),
-                ),
-                const Divider(height: 20),
-                SwitchListTile(
-                  title: const Text('Avisos en segundo plano'),
-                  subtitle: const Text('Mostrar notificaciones de Windows cuando se oculten archivos estando minimizado.'),
-                  value: _showNotifications,
-                  onChanged: _setShowNotifications,
+                    ],
+                  ),
                 ),
               ],
             ),

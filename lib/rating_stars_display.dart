@@ -15,13 +15,13 @@ class RatingStarsDisplay extends StatelessWidget {
     switch (rating) {
       case 1:
       case 2:
-        return const Color.fromARGB(255, 230, 201, 40); // Dorado
+        return const Color(0xFFFFD60A);
       case 3:
-        return const Color.fromARGB(255, 230, 201, 40); // Dorado
+        return const Color(0xFFFFD60A);
       case 4:
-        return const Color.fromARGB(255, 230, 201, 40); // Dorado
+        return const Color(0xFFFFD60A);
       case 5:
-        return const Color.fromARGB(255, 230, 201, 40); // Dorado
+        return const Color(0xFFFFD60A);
       default:
         return Colors.grey.shade700;
     }
@@ -29,37 +29,23 @@ class RatingStarsDisplay extends StatelessWidget {
 
   @override
 Widget build(BuildContext context) {
-  if (rating == 0) {
-    return const SizedBox.shrink(); // No muestra nada si no hay calificación
+    if (rating == 0) {
+      return const SizedBox.shrink();
+    }
+
+    final Color starColor = _getColorForRating(rating);
+    final Color outlineColor = const Color.fromARGB(255, 88, 88, 88).withOpacity(0.9);
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: List.generate(5, (index) {
+        return Icon(
+          index < rating ? Icons.star : Icons.star_border,
+          color: index < rating ? starColor : outlineColor,
+          size: iconSize,
+          // ¡Adiós a la sombra pesada!
+        );
+      }),
+    );
   }
-
-  // --- INICIO DE LA MODIFICACIÓN ---
-
-  // Color para las estrellas RELLENAS (basado en la calificación)
-  final Color starColor = _getColorForRating(rating);
-
-  // Color para el CONTORNO de las estrellas (las vacías).
-  // ¡Puedes cambiar este color a tu gusto!
-  final Color outlineColor = const Color.fromARGB(255, 88, 88, 88).withOpacity(0.9);
-
-  final shadow = Shadow(
-    blurRadius: 2.0,
-    color: Colors.black.withOpacity(0.7),
-    offset: const Offset(1.0, 1.0),
-  );
-
-  return Row(
-    mainAxisSize: MainAxisSize.min,
-    children: List.generate(5, (index) {
-      return Icon(
-        index < rating ? Icons.star : Icons.star_border,
-        // Condición para aplicar el color correcto a cada tipo de estrella
-        color: index < rating ? starColor : outlineColor,
-        size: iconSize,
-        shadows: [shadow],
-      );
-    }),
-  );
-  // --- FIN DE LA MODIFICACIÓN ---
-}
 }
