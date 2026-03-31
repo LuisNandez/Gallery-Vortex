@@ -10,7 +10,11 @@ class ImageMetadata {
   int rating;
   int addedTimestamp;
 
-  ImageMetadata({this.tags = const [], this.rating = 0, this.addedTimestamp = 0});
+  ImageMetadata({
+    List<String>? tags, 
+    this.rating = 0, 
+    this.addedTimestamp = 0
+  }) : tags = tags ?? []; 
 }
 
 class MetadataService {

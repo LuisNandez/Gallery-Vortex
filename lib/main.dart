@@ -980,22 +980,23 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   void _showContextMenu(BuildContext context, Offset position) {
     _hideContextMenu();
     final screenSize = MediaQuery.of(context).size;
-    const estimatedMenuWidth = 150.0;
-    const estimatedMenuHeight = 200.0; 
 
-    double? top, bottom, left, right;
+    // 1. LÓGICA DINÁMICA DE POSICIONAMIENTO
+    // Determinamos en qué mitad de la pantalla hizo clic el usuario
+    final isBottomHalf = position.dy > screenSize.height / 2;
+    final isRightHalf = position.dx > screenSize.width / 2;
 
-    if (position.dy + estimatedMenuHeight > screenSize.height) {
-      bottom = screenSize.height - position.dy;
-    } else {
-      top = position.dy;
-    }
+    // Asignamos las anclas. Si está abajo, lo anclamos al bottom para que crezca hacia arriba.
+    final top = isBottomHalf ? null : position.dy;
+    final bottom = isBottomHalf ? screenSize.height - position.dy : null;
+    final left = isRightHalf ? null : position.dx;
+    final right = isRightHalf ? screenSize.width - position.dx : null;
 
-    if (position.dx + estimatedMenuWidth > screenSize.width) {
-      right = screenSize.width - position.dx;
-    } else {
-      left = position.dx;
-    }
+    // Calculamos el espacio máximo disponible para evitar que se salga de la pantalla
+    // Le restamos 16 pixeles como margen de seguridad con el borde
+    final maxAvailableHeight = isBottomHalf 
+        ? position.dy - 16.0 
+        : screenSize.height - position.dy - 16.0;
 
     final hasImageSelected = _selectedItems.any((item) => item is File);
     
@@ -1056,7 +1057,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             onTap: _handleDelete,
             icon: Icons.delete_forever_outlined,
             isDestructive: true),
-      if (_vortexPath != null) ...[
+      /*if (_vortexPath != null) ...[
         const Divider(height: 1, thickness: 1),
         _ContextMenuItemWidget(
             title: 'Restaurar Todo',
@@ -1065,8 +1066,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               _restoreAllAndClear(); 
             },
             icon: Icons.settings_backup_restore,
-            isDestructive: true), // Lo marcamos en rojo porque vacía toda la bóveda
-      ],
+            isDestructive: true),
+      ],*/
     ];
 
     if (items.whereType<_ContextMenuItemWidget>().isEmpty && _VaultExplorerScreenState._clipboard.isEmpty && !hasImageSelected) return;
@@ -1093,26 +1094,35 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               bottom: bottom,
               left: left,
               right: right,
-              child: ClipRRect(
-              borderRadius: BorderRadius.circular(8.0),
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), // Efecto Cristal
-                child: Material(
-                  elevation: 0,
-                  color: const Color(0xFF252525).withOpacity(0.65), // Fondo translúcido
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8.0),
-                    side: const BorderSide(color: Colors.white12, width: 0.5), // Borde sutil
-                  ),
-                  child: IntrinsicWidth(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: items,
+              // 2. RESTRICCIÓN DE ALTURA
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: maxAvailableHeight,
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8.0),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                    child: Material(
+                      elevation: 0,
+                      color: const Color(0xFF252525).withOpacity(0.65),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8.0),
+                        side: const BorderSide(color: Colors.white12, width: 0.5),
+                      ),
+                      child: IntrinsicWidth(
+                        // 3. SCROLL INTEGRADO
+                        child: SingleChildScrollView(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: items,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
             ),
           ],
         );
@@ -1123,22 +1133,19 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   
   void _showRatingMenu(BuildContext context, Offset position) {
     final screenSize = MediaQuery.of(context).size;
-    const estimatedMenuWidth = 180.0;
-    const estimatedMenuHeight = 250.0;
+    
+    // Lógica dinámica
+    final isBottomHalf = position.dy > screenSize.height / 2;
+    final isRightHalf = position.dx > screenSize.width / 2;
 
-    double? top, bottom, left, right;
+    final top = isBottomHalf ? null : position.dy;
+    final bottom = isBottomHalf ? screenSize.height - position.dy : null;
+    final left = isRightHalf ? null : position.dx;
+    final right = isRightHalf ? screenSize.width - position.dx : null;
 
-    if (position.dy + estimatedMenuHeight > screenSize.height) {
-      bottom = screenSize.height - position.dy;
-    } else {
-      top = position.dy;
-    }
-
-    if (position.dx + estimatedMenuWidth > screenSize.width) {
-      right = screenSize.width - position.dx;
-    } else {
-      left = position.dx;
-    }
+    final maxAvailableHeight = isBottomHalf 
+        ? position.dy - 16.0 
+        : screenSize.height - position.dy - 16.0;
 
     int? currentRating;
     final selectedFiles = _selectedItems.whereType<File>().toList();
@@ -1154,7 +1161,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       }
     }
   
-    // Generamos las opciones de calificación
     final items = List.generate(6, (index) {
       final isSelected = index == currentRating;
       return InkWell(
@@ -1170,7 +1176,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
           child: Row(
             children: [
-              // Espacio para la marca de verificación
               Icon(isSelected ? Icons.check : null, size: 18, color: Colors.white), 
               const SizedBox(width: 12),
               if (index == 0)
@@ -1183,7 +1188,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       );
     });
 
-    // Construimos el menú flotante esmerilado
     _contextMenuOverlay = OverlayEntry(
       builder: (context) {
         return Stack(
@@ -1197,21 +1201,26 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             ),
             Positioned(
               top: top, bottom: bottom, left: left, right: right,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(8.0),
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), // Efecto Cristal
-                  child: Material(
-                    elevation: 0,
-                    color: const Color(0xFF252525).withOpacity(0.65), // Fondo translúcido
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8.0),
-                      side: const BorderSide(color: Colors.white12, width: 0.5),
-                    ),
-                    child: IntrinsicWidth(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: items,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: maxAvailableHeight),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8.0),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                    child: Material(
+                      elevation: 0,
+                      color: const Color(0xFF252525).withOpacity(0.65),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8.0),
+                        side: const BorderSide(color: Colors.white12, width: 0.5),
+                      ),
+                      child: IntrinsicWidth(
+                        child: SingleChildScrollView(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: items,
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -1606,6 +1615,20 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         context: context,
         barrierColor: Colors.black.withOpacity(0.4),
         builder: (context) {
+          
+          // 1. Extraemos la lógica a una función local para reusarla
+          Future<void> handleCreate() async {
+            if (_folderNameController.text.isNotEmpty) {
+              final newDir = Directory(p.join(
+                  _currentVaultDir.path, _folderNameController.text));
+              if (!await newDir.exists()) {
+                await newDir.create();
+                if (mounted) Navigator.of(context).pop();
+                await _loadVaultContents(quiet: true);
+              }
+            }
+          }
+
           return Dialog(
             backgroundColor: Colors.transparent,
             elevation: 0,
@@ -1629,6 +1652,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                         controller: _folderNameController,
                         autofocus: true,
                         style: const TextStyle(color: Colors.white),
+                        // 2. Agregamos onSubmitted para escuchar la tecla ENTER
+                        onSubmitted: (_) => handleCreate(), 
                         decoration: InputDecoration(
                           filled: true,
                           fillColor: const Color(0xFF1C1C1E).withOpacity(0.8), // Campo de texto oscuro
@@ -1646,24 +1671,14 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                         children: [
                           TextButton(
-                            child: const Text('Cancelar', style: TextStyle(fontWeight: FontWeight.w500)),
                             onPressed: () => Navigator.of(context).pop(),
                             style: TextButton.styleFrom(foregroundColor: Colors.white70),
+                            child: const Text('Cancelar', style: TextStyle(fontWeight: FontWeight.w500)),
                           ),
                           TextButton(
-                            child: const Text('Crear', style: TextStyle(fontWeight: FontWeight.w600)),
+                            onPressed: handleCreate, // 3. Reusamos la función aquí
                             style: TextButton.styleFrom(foregroundColor: const Color(0xFF0A84FF)),
-                            onPressed: () async {
-                              if (_folderNameController.text.isNotEmpty) {
-                                final newDir = Directory(p.join(
-                                    _currentVaultDir.path, _folderNameController.text));
-                                if (!await newDir.exists()) {
-                                  await newDir.create();
-                                  if (mounted) Navigator.of(context).pop();
-                                  await _loadVaultContents(quiet: true);
-                                }
-                              }
-                            },
+                            child: const Text('Crear', style: TextStyle(fontWeight: FontWeight.w600)),
                           ),
                         ],
                       )
@@ -1804,14 +1819,14 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               tooltip: 'Crear carpeta',
               onPressed: _showCreateFolderDialog,
             ),
-          if (!_isLoading &&
+          /*if (!_isLoading &&
               _vortexPath != null &&
               widget.currentDirectory == null)
             IconButton(
               icon: const Icon(Icons.restore_from_trash),
               tooltip: 'Restaurar todo y olvidar carpeta',
               onPressed: _restoreAllAndClear,
-            ),
+            ),*/
             if (!_isLoading && _vortexPath != null)
             if (!_isLoading && _vortexPath != null)
             IconButton(
@@ -2371,7 +2386,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     }
   }
 
-  Future<void> _restoreAllAndClear() async {
+  Future<void> _restoreAllAndClear({VoidCallback? onStart}) async {
     bool confirm = await _showConfirmationDialog(
           title: 'Restaurar Todo',
           content:
@@ -2387,6 +2402,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
     if (selectedDirectory == null) return;
     final destinationDir = Directory(selectedDirectory);
+    if (onStart != null) onStart();
     
     setState(() => _isLoading = true);
     
@@ -2513,7 +2529,21 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   void _openSettings() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (context) => const SettingsScreen()),
+      MaterialPageRoute(
+        builder: (context) => SettingsScreen(
+          // Solo pasamos la función si hay un Vórtice configurado y estamos en la raíz
+          onRestoreAll: (_vortexPath != null && widget.currentDirectory == null) 
+              ? () => _restoreAllAndClear(
+                    onStart: () {
+                      // Cerramos Ajustes de forma segura
+                      if (Navigator.canPop(context)) {
+                        Navigator.pop(context); 
+                      }
+                    },
+                  )
+              : null,
+        ),
+      ),
     );
   }
 }
@@ -3246,7 +3276,8 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
 }
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key});
+  final VoidCallback? onRestoreAll;
+  const SettingsScreen({super.key, this.onRestoreAll});
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -3409,6 +3440,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ],
                   ),
                 ),
+
+                const SizedBox(height: 24),
+
+                // NUEVA SECCIÓN: ACCIONES DE BÓVEDA
+                if (widget.onRestoreAll != null) ...[
+                  const Padding(
+                    padding: EdgeInsets.only(left: 16, bottom: 8),
+                    child: Text('RESTAURAR BÓVEDA', style: TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+                  ),
+                  Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1C1C1E),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.redAccent.withOpacity(0.2)),
+                    ),
+                    child: ListTile(
+                      leading: const Icon(Icons.settings_backup_restore, color: Colors.redAccent),
+                      title: const Text('Restaurar toda la bóveda', style: TextStyle(fontSize: 13, color: Colors.redAccent)),
+                      subtitle: const Text('Mueve todos los archivos fuera y olvida la carpeta actual.', style: TextStyle(fontSize: 11, color: Colors.white54)),
+                      onTap: () {
+                        widget.onRestoreAll!();
+                      },
+                    ),
+                  ),
+                ],
               ],
             ),
     );
