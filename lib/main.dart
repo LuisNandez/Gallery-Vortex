@@ -381,7 +381,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   final GlobalKey _gridDetectorKey = GlobalKey();
   Offset? _marqueeStart;
   Rect? _marqueeRect;
-  final Map<int, GlobalKey> _itemKeys = {};
+  final Map<String, GlobalKey> _itemKeys = {};
 
   // State for double tap logic
   Timer? _doubleTapTimer;
@@ -407,6 +407,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   SortCriteria _currentSortCriteria = SortCriteria.date;
   bool _sortAscending = true; // true = más viejo/A-Z/más liviano primero
 
+  // --- STATE PARA BÚSQUEDA ---
+  bool _isSearchVisible = false;
+  String _searchQuery = '';
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
+
   // NUEVAS VARIABLES PARA EL MENÚ DE FILTRO ESTILO MAC
   final GlobalKey _sortButtonKey = GlobalKey();
   OverlayEntry? _sortOverlay;
@@ -414,7 +420,38 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   bool _isSupportedFile(String filePath) {
   final ext = p.extension(filePath).toLowerCase();
   return _isImageFile(filePath) || ['.mp4', '.mov', '.avi', '.mkv'].contains(ext);
-}
+  }
+
+  List<FileSystemEntity> _filteredVaultContents = [];
+
+  void _applySearchFilter() {
+    if (_searchQuery.isEmpty) {
+      _filteredVaultContents = List.from(_vaultContents);
+      return;
+    }
+    
+    final query = _searchQuery.toLowerCase();
+    _filteredVaultContents = _vaultContents.where((entity) {
+      if (entity is Directory) {
+        return p.basename(entity.path).toLowerCase().contains(query);
+      } else if (entity is File) {
+        // Buscar por nombre limpio
+        final cleanName = _getDeobfuscatedName(p.basename(entity.path)).toLowerCase();
+        if (cleanName.contains(query)) return true;
+
+        // Buscar por etiquetas
+        final imageId = p.relative(entity.path, from: _vaultRootDir.path);
+        final tags = _metadataService.getMetadataForImage(imageId).tags;
+        if (tags.any((tag) => tag.toLowerCase().contains(query))) return true;
+
+        return false;
+      }
+      return false;
+    }).toList();
+    if (_scrollController.hasClients) {
+      _scrollController.jumpTo(0.0);
+    }
+  }
 
 
   @override
@@ -521,6 +558,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _sortOverlay?.remove();
     _scrollController.dispose();
     _notificationTimer?.cancel();
+    _searchController.dispose();
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
@@ -653,8 +692,10 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       return _sortAscending ? comparison : -comparison;
     });
 
+    _vaultContents = contents; 
+    _applySearchFilter(); // Aplicamos el filtro antes de refrescar la UI
+    
     setState(() {
-      _vaultContents = contents;
       _itemKeys.clear();
       _isLoading = false; 
       _shiftSelectionAnchorIndex = null;
@@ -945,7 +986,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
 
   void _navegarGrid(int delta) {
-    if (_vaultContents.isEmpty) return;
+    if (_filteredVaultContents.isEmpty) return;
 
     setState(() {
       if (_focusedIndex == -1 || _selectedItems.isEmpty) {
@@ -955,11 +996,11 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       }
 
       if (_focusedIndex < 0) _focusedIndex = 0;
-      if (_focusedIndex >= _vaultContents.length) {
-        _focusedIndex = _vaultContents.length - 1;
+      if (_focusedIndex >= _filteredVaultContents.length) {
+        _focusedIndex = _filteredVaultContents.length - 1;
       }
 
-      final entity = _vaultContents[_focusedIndex];
+      final entity = _filteredVaultContents[_focusedIndex];
       _selectedItems = {entity};
       _shiftSelectionAnchorIndex = _focusedIndex;
     });
@@ -968,8 +1009,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
 
   void _abrirSeleccionado() {
-    if (_focusedIndex != -1 && _focusedIndex < _vaultContents.length) {
-      final entity = _vaultContents[_focusedIndex];
+    if (_focusedIndex != -1 && _focusedIndex < _filteredVaultContents.length) {
+      final entity = _filteredVaultContents[_focusedIndex];
       // Simulamos el doble clic para abrir la carpeta o la imagen a pantalla completa
       _onItemTap(entity, isDoubleClick: true);
     } else if (_selectedItems.length == 1) {
@@ -1245,7 +1286,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _hideContextMenu();
     
     final tappedFile = imageFiles[initialIndex];
-    final initialIndexInVault = _vaultContents.indexWhere((e) => e.path == tappedFile.path);
+    final initialIndexInVault = _filteredVaultContents.indexWhere((e) => e.path == tappedFile.path);
 
     if (initialIndexInVault != -1) {
       setState(() {
@@ -1276,7 +1317,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           vaultRootPath: _vaultRootDir.path,
           onPageChangedCallback: (fileIndex) {
             final lastViewedFile = imageFiles[fileIndex];
-            final indexInVault = _vaultContents.indexWhere((e) => e.path == lastViewedFile.path);
+            final indexInVault = _filteredVaultContents.indexWhere((e) => e.path == lastViewedFile.path);
             
             if (indexInVault != -1) {
               setState(() {
@@ -1296,7 +1337,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     if (returnedIndex != null) {
       final lastViewedFile = imageFiles[returnedIndex];
       // Buscamos su posición real en la cuadrícula (ya que la cuadrícula incluye carpetas)
-      final indexInVault = _vaultContents.indexWhere((e) => e.path == lastViewedFile.path);
+      final indexInVault = _filteredVaultContents.indexWhere((e) => e.path == lastViewedFile.path);
       
       if (indexInVault != -1) {
         setState(() {
@@ -1315,10 +1356,15 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
 
   // NUEVO: Método optimizado de Scroll
-  void _scrollToFocusedItem({bool animate = false}) {
-    if (_focusedIndex < 0 || _focusedIndex >= _vaultContents.length) return;
+ void _scrollToFocusedItem({bool animate = false}) {
+    // CAMBIO 1: Usar _filteredVaultContents
+    if (_focusedIndex < 0 || _focusedIndex >= _filteredVaultContents.length) return;
 
-    final key = _itemKeys[_focusedIndex];
+    // CAMBIO 2: Obtener la entidad y buscar por su ruta
+    final entity = _filteredVaultContents[_focusedIndex];
+    final key = _itemKeys[entity.path];
+    
+    // ... mantén el resto de la lógica igual, pero asegúrate de usar la llave correcta abajo:
     
     // CASO 1: El elemento ya está dibujado en memoria (visible o cerca)
     if (key != null && key.currentContext != null) {
@@ -1351,8 +1397,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           duration: const Duration(milliseconds: 300), 
           curve: Curves.easeInOut
         ).then((_) {
-          // Una vez cerca, el elemento ya se dibujó. Hacemos el ajuste milimétrico final.
-          final newKey = _itemKeys[_focusedIndex];
+          // CAMBIO 3: Volver a buscar la llave por ruta
+          final newKey = _itemKeys[entity.path];
           if (newKey?.currentContext != null) {
             Scrollable.ensureVisible(newKey!.currentContext!, alignment: 0.5, duration: Duration.zero);
           }
@@ -1361,7 +1407,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         _scrollController.jumpTo(targetOffset);
         // Esperamos 1 frame a que Flutter construya los widgets de esa zona
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          final newKey = _itemKeys[_focusedIndex];
+          // CAMBIO 4: Volver a buscar la llave por ruta
+          final newKey = _itemKeys[entity.path];
           if (newKey?.currentContext != null) {
             Scrollable.ensureVisible(newKey!.currentContext!, alignment: 0.5, duration: Duration.zero);
           }
@@ -1383,7 +1430,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           ),
         ).then((_) => _loadVaultContents());
       } else if (entity is File) {
-        final imageFiles = _vaultContents.whereType<File>().toList();
+        final imageFiles = _filteredVaultContents.whereType<File>().toList();
         int initialIndex = imageFiles.indexWhere((f) => p.equals(f.path, entity.path));
         if (initialIndex == -1) {
           initialIndex = 0; 
@@ -1423,7 +1470,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           final end =
               index > _shiftSelectionAnchorIndex! ? index : _shiftSelectionAnchorIndex!;
           _selectedItems =
-              _vaultContents.sublist(start, end + 1).toSet();
+              _filteredVaultContents.sublist(start, end + 1).toSet();
         }
       } else if (isCtrlPressed) {
         if (_selectedItems.contains(entity)) {
@@ -1473,8 +1520,9 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       _marqueeRect = Rect.fromPoints(_marqueeStart!, details.localPosition);
       final tempSelection = <FileSystemEntity>{};
 
-      for (int i = 0; i < _vaultContents.length; i++) {
-        final key = _itemKeys[i];
+      for (int i = 0; i < _filteredVaultContents.length; i++) {
+        final entity = _filteredVaultContents[i];
+        final key = _itemKeys[entity.path];
         if (key?.currentContext != null) {
           final itemBox = key!.currentContext!.findRenderObject() as RenderBox;
 
@@ -1485,7 +1533,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               itemBox.size.width, itemBox.size.height);
 
           if (_marqueeRect!.overlaps(itemRect)) {
-            tempSelection.add(_vaultContents[i]);
+            tempSelection.add(_filteredVaultContents[i]);
           }
         }
       }
@@ -1804,6 +1852,29 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         titleSpacing: 0,
         backgroundColor: Colors.black26,
         actions: [
+          if (!_isLoading && _vortexPath != null)
+            IconButton(
+              icon: Icon(
+                _isSearchVisible ? Icons.search_off : Icons.search,
+                color: _isSearchVisible ? const Color(0xFF0A84FF) : Colors.white,
+              ),
+              tooltip: 'Buscar (Nombre o Etiqueta)',
+              onPressed: () {
+                setState(() {
+                  _isSearchVisible = !_isSearchVisible;
+                  if (!_isSearchVisible) {
+                    _searchQuery = '';
+                    _searchController.clear();
+                    _applySearchFilter();
+                  }
+                });
+                if (_isSearchVisible) {
+                  _searchFocusNode.requestFocus();
+                } else {
+                  FocusScope.of(context).unfocus();
+                }
+              },
+            ),
           if (!_isLoading && _vortexPath != null && widget.currentDirectory == null)
             IconButton(
               icon: Icon(
@@ -1840,6 +1911,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             tooltip: 'Ajustes',
             onPressed: _openSettings,
           ),
+          
         ],
       ),
       body: Column(
@@ -1909,7 +1981,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
 
   Widget _buildFileExplorerBody() {
-    return _vaultContents.isEmpty
+    return _filteredVaultContents.isEmpty && _searchQuery.isEmpty
         ? GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: () {
@@ -1965,6 +2037,61 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                     ),
                   ),
                 ),
+                Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: AnimatedOpacity(
+                    opacity: _isSearchVisible ? 1.0 : 0.0,
+                    duration: const Duration(milliseconds: 200),
+                    child: IgnorePointer(
+                      ignoring: !_isSearchVisible,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12.0),
+                        child: BackdropFilter(
+                          filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                          child: Container(
+                            width: 350,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF252525).withOpacity(0.65),
+                              border: Border.all(color: Colors.white12, width: 0.5),
+                              boxShadow: [
+                                BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 10, offset: const Offset(0, 4))
+                              ]
+                            ),
+                            child: TextField(
+                              controller: _searchController,
+                              focusNode: _searchFocusNode,
+                              style: const TextStyle(color: Colors.white, fontSize: 14),
+                              onChanged: (value) {setState(() {_searchQuery = value;_applySearchFilter();});},
+                              decoration: InputDecoration(
+                                hintText: 'Buscar nombre o etiqueta...',
+                                hintStyle: const TextStyle(color: Colors.white54),
+                                prefixIcon: const Icon(Icons.search, color: Colors.white54, size: 20),
+                                suffixIcon: _searchQuery.isNotEmpty
+                                    ? IconButton(
+                                        icon: const Icon(Icons.cancel, color: Colors.white54, size: 16),
+                                        onPressed: () {
+                                          _searchController.clear();
+                                          setState(() {
+                                            _searchQuery = '';
+                                            _applySearchFilter();
+                                          });
+                                        },
+                                      )
+                                    : null,
+                                border: InputBorder.none,
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ],
           );
   }
@@ -2074,22 +2201,38 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               child: Scrollbar(
                 controller: _scrollController,
                 thumbVisibility: true,
-                child: GridView.builder(
-                  key: _gridDetectorKey,
-                  controller: _scrollController,
-                  padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
-                  gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: _thumbnailExtent,
-                    mainAxisSpacing: 8.0,
-                    crossAxisSpacing: 8.0,
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween<double>(
+                    begin: 8.0, // Valor inicial por defecto
+                    end: _isSearchVisible ? 70.0 : 8.0, // Hacia dónde debe animarse
                   ),
-                  itemCount: _vaultContents.length,
-                  itemBuilder: (context, index) {
-                    final entity = _vaultContents[index];
-                    _itemKeys.putIfAbsent(index, () => GlobalKey());
-                    return KeyedSubtree(
-                      key: _itemKeys[index],
-                      child: _buildDraggableItem(entity, index),
+                  duration: const Duration(milliseconds: 200), // La misma duración que la barra
+                  curve: Curves.easeInOut, // Animación suave al inicio y al final
+                  builder: (context, animatedTopPadding, child) {
+                    return GridView.builder(
+                      key: _gridDetectorKey,
+                      controller: _scrollController,
+                      // USAMOS EL PADDING ANIMADO AQUÍ:
+                      padding: EdgeInsets.only(
+                        left: 24.0,
+                        right: 24.0,
+                        top: animatedTopPadding,
+                        bottom: 8.0,
+                      ),
+                      gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                        maxCrossAxisExtent: _thumbnailExtent,
+                        mainAxisSpacing: 8.0,
+                        crossAxisSpacing: 8.0,
+                      ),
+                      itemCount: _filteredVaultContents.length,
+                      itemBuilder: (context, index) {
+                        final entity = _filteredVaultContents[index];
+                        _itemKeys.putIfAbsent(entity.path, () => GlobalKey());
+                        return KeyedSubtree(
+                          key: _itemKeys[entity.path],
+                          child: _buildDraggableItem(entity, index),
+                        );
+                      },
                     );
                   },
                 ),
@@ -2531,14 +2674,11 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       context,
       MaterialPageRoute(
         builder: (context) => SettingsScreen(
-          // Solo pasamos la función si hay un Vórtice configurado y estamos en la raíz
+          metadataService: _metadataService, // <--- PASAR SERVICIO
           onRestoreAll: (_vortexPath != null && widget.currentDirectory == null) 
               ? () => _restoreAllAndClear(
                     onStart: () {
-                      // Cerramos Ajustes de forma segura
-                      if (Navigator.canPop(context)) {
-                        Navigator.pop(context); 
-                      }
+                      if (Navigator.canPop(context)) Navigator.pop(context);
                     },
                   )
               : null,
@@ -2614,6 +2754,18 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
     super.initState();
     // Cargamos la miniatura UNA SOLA VEZ cuando el widget se crea
     _loadThumbnail();
+  }
+
+  @override
+  void didUpdateWidget(ImageItemWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Si Flutter nos recicla y nos pasa un archivo distinto al que teníamos...
+    if (oldWidget.imageFile.path != widget.imageFile.path) {
+      setState(() {
+        _thumbFile = null; // Borramos la miniatura vieja (mostrará el cargando)
+      });
+      _loadThumbnail(); // Cargamos la miniatura correcta
+    }
   }
 
   Future<void> _loadThumbnail() async {
@@ -3277,7 +3429,9 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
 
 class SettingsScreen extends StatefulWidget {
   final VoidCallback? onRestoreAll;
-  const SettingsScreen({super.key, this.onRestoreAll});
+  final MetadataService? metadataService;
+
+  const SettingsScreen({super.key, this.onRestoreAll, this.metadataService});
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -3442,6 +3596,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
 
                 const SizedBox(height: 24),
+                const Padding(
+                  padding: EdgeInsets.only(left: 16, bottom: 8),
+                  child: Text('CONTENIDO', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                ),
+                Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1C1C1E),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: ListTile(
+                    leading: const Icon(Icons.label_outline, color: Color(0xFF0A84FF)),
+                    title: const Text('Gestionar Etiquetas', style: TextStyle(fontSize: 13)),
+                    trailing: const Icon(Icons.chevron_right, size: 20, color: Colors.white24),
+                    onTap: () {
+                      if (widget.metadataService != null) {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => TagManagementScreen(metadataService: widget.metadataService!),
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                ),
+
+                const SizedBox(height: 24),
 
                 // NUEVA SECCIÓN: ACCIONES DE BÓVEDA
                 if (widget.onRestoreAll != null) ...[
@@ -3554,3 +3735,287 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final ext = _getRealExtension(filePath);
     return ['.mp4', '.mov', '.avi', '.mkv'].contains(ext);
   }
+
+  class TagManagementScreen extends StatefulWidget {
+  final MetadataService metadataService;
+  const TagManagementScreen({super.key, required this.metadataService});
+
+  @override
+  State<TagManagementScreen> createState() => _TagManagementScreenState();
+}
+
+class _TagManagementScreenState extends State<TagManagementScreen> {
+  late List<String> _allTags; // Guardará TODAS las etiquetas
+  late List<String> _filteredTags; // Guardará solo las que coincidan con la búsqueda
+  
+  final TextEditingController _editController = TextEditingController();
+  final TextEditingController _searchController = TextEditingController(); // Controlador del buscador
+
+  @override
+  void initState() {
+    super.initState();
+    _allTags = widget.metadataService.getAllTags()..sort();
+    _filteredTags = List.from(_allTags); // Al inicio, mostramos todas
+    
+    // Escuchamos cada vez que el usuario escribe algo para filtrar en tiempo real
+    _searchController.addListener(_filterTags);
+  }
+
+  @override
+  void dispose() {
+    _editController.dispose();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  // Lógica para filtrar la lista
+  void _filterTags() {
+    final query = _searchController.text.toLowerCase();
+    setState(() {
+      if (query.isEmpty) {
+        _filteredTags = List.from(_allTags);
+      } else {
+        _filteredTags = _allTags
+            .where((tag) => tag.toLowerCase().contains(query))
+            .toList();
+      }
+    });
+  }
+
+  void _refresh() {
+    setState(() {
+      _allTags = widget.metadataService.getAllTags()..sort();
+      _filterTags(); // Volvemos a aplicar el filtro actual
+    });
+  }
+
+  Future<void> _showEditDialog(String oldTag) async {
+    _editController.text = oldTag;
+    return showDialog(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.4),
+      builder: (context) => Dialog(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(14.0),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+            child: Container(
+              width: 320,
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: const Color(0xFF2C2C2E).withOpacity(0.8),
+                border: Border.all(color: Colors.white12, width: 0.5),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Renombrar Etiqueta',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: _editController,
+                    autofocus: true,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      filled: true,
+                      fillColor: const Color(0xFF1C1C1E).withOpacity(0.8),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide.none,
+                      ),
+                      hintText: "Nuevo nombre",
+                      hintStyle: const TextStyle(color: Colors.white54),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: TextButton.styleFrom(foregroundColor: Colors.white70),
+                        child: const Text('Cancelar', style: TextStyle(fontWeight: FontWeight.w500)),
+                      ),
+                      TextButton(
+                        onPressed: () async {
+                          await widget.metadataService.renameTagGlobal(oldTag, _editController.text);
+                          if (mounted) Navigator.pop(context);
+                          _refresh();
+                        },
+                        style: TextButton.styleFrom(foregroundColor: const Color(0xFF0A84FF)),
+                        child: const Text('Guardar', style: TextStyle(fontWeight: FontWeight.w600)),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // --- MÉTODO PARA CONFIRMAR ELIMINACIÓN (Con Efecto Cristal de Mac) ---
+  Future<void> _confirmDelete(String tag) async {
+    final int count = widget.metadataService.countImagesWithTag(tag);
+    final String nounText = count == 1 ? ' imagen' : ' imágenes';
+
+    final bool confirm = await showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.4),
+      builder: (context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(14.0),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+              child: Container(
+                width: 320,
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2C2C2E).withOpacity(0.8),
+                  border: Border.all(color: Colors.white12, width: 0.5),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Eliminar Etiqueta',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white),
+                    ),
+                    const SizedBox(height: 16),
+                    RichText(
+                      textAlign: TextAlign.center,
+                      text: TextSpan(
+                        style: const TextStyle(color: Colors.white70, fontSize: 14, fontFamily: 'Segoe UI'), 
+                        children: [
+                          TextSpan(text: '¿Estás seguro de que deseas eliminar permanentemente la etiqueta "$tag"?\n\nActualmente está siendo usada por '),
+                          TextSpan(
+                            text: count.toString(),
+                            style: const TextStyle(
+                              color: Color(0xFF0A84FF),
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          TextSpan(text: '$nounText.'),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          style: TextButton.styleFrom(foregroundColor: Colors.white70),
+                          child: const Text('Cancelar', style: TextStyle(fontWeight: FontWeight.w500)),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, true),
+                          style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+                          child: const Text('Eliminar', style: TextStyle(fontWeight: FontWeight.w600)),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    ) ?? false;
+
+    if (confirm) {
+      await widget.metadataService.deleteTagGlobal(tag);
+      _refresh();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Gestionar Etiquetas', style: TextStyle(fontSize: 15)),
+      ),
+      body: Column(
+        children: [
+          // --- BARRA DE BÚSQUEDA MAC STYLE ---
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: TextField(
+              controller: _searchController,
+              style: const TextStyle(color: Colors.white, fontSize: 14),
+              decoration: InputDecoration(
+                filled: true,
+                fillColor: const Color(0xFF1C1C1E),
+                prefixIcon: const Icon(Icons.search, color: Colors.white54, size: 20),
+                // Botón para limpiar la búsqueda rápidamente
+                suffixIcon: _searchController.text.isNotEmpty 
+                  ? IconButton(
+                      icon: const Icon(Icons.cancel, color: Colors.white54, size: 16),
+                      onPressed: () {
+                        _searchController.clear();
+                        FocusScope.of(context).unfocus(); // Oculta el teclado si está en móvil/tablet
+                      },
+                    )
+                  : null,
+                contentPadding: const EdgeInsets.symmetric(vertical: 0),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide.none,
+                ),
+                hintText: 'Buscar etiqueta...',
+                hintStyle: const TextStyle(color: Colors.white54),
+              ),
+            ),
+          ),
+          
+          // --- LISTA DE ETIQUETAS FILTRADA ---
+          Expanded(
+            child: _allTags.isEmpty
+                ? const Center(child: Text('No hay etiquetas guardadas.', style: TextStyle(color: Colors.white54)))
+                : _filteredTags.isEmpty
+                    ? const Center(child: Text('No se encontraron coincidencias.', style: TextStyle(color: Colors.white54)))
+                    : ListView.separated(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        itemCount: _filteredTags.length, // <-- Usamos la lista filtrada
+                        separatorBuilder: (_, __) => const Divider(height: 1, indent: 40, color: Colors.white12),
+                        itemBuilder: (context, index) {
+                          final tag = _filteredTags[index]; // <-- Usamos la lista filtrada
+                          return ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: const Icon(Icons.tag, size: 18, color: Colors.white54),
+                            title: Text(tag, style: const TextStyle(fontSize: 14)),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.edit_outlined, size: 18, color: Colors.white54),
+                                  onPressed: () => _showEditDialog(tag),
+                                  tooltip: 'Renombrar',
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+                                  onPressed: () => _confirmDelete(tag),
+                                  tooltip: 'Eliminar',
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+          ),
+        ],
+      ),
+    );
+  }
+}

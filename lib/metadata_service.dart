@@ -187,4 +187,60 @@ class MetadataService {
       await _db.delete('metadata', where: 'image_id = ?', whereArgs: [key]);
     }
   }
+
+  // Borra una etiqueta de la faz de la tierra (globalmente)
+  Future<void> deleteTagGlobal(String tag) async {
+    final cleanTag = tag.trim().toLowerCase();
+    _allTags.remove(cleanTag);
+    await _db.delete('tags', where: 'tag = ?', whereArgs: [cleanTag]);
+
+    // Eliminar la etiqueta de la metadata de cada imagen en memoria y DB
+    for (final entry in _imageData.entries) {
+      if (entry.value.tags.contains(cleanTag)) {
+        entry.value.tags.remove(cleanTag);
+        await _saveSingleMetadata(entry.key, entry.value);
+      }
+    }
+  }
+
+  // Renombra una etiqueta en todo el sistema
+  Future<void> renameTagGlobal(String oldTag, String newTag) async {
+    final cleanOld = oldTag.trim().toLowerCase();
+    final cleanNew = newTag.trim().toLowerCase();
+    if (cleanNew.isEmpty || cleanOld == cleanNew) return;
+
+    // 1. Actualizar lista global
+    if (!_allTags.contains(cleanNew)) {
+      _allTags.add(cleanNew);
+      await _db.insert('tags', {'tag': cleanNew}, conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    _allTags.remove(cleanOld);
+    await _db.delete('tags', where: 'tag = ?', whereArgs: [cleanOld]);
+
+    // 2. Actualizar todas las imágenes que tenían la etiqueta vieja
+    for (final entry in _imageData.entries) {
+      if (entry.value.tags.contains(cleanOld)) {
+        entry.value.tags.remove(cleanOld);
+        if (!entry.value.tags.contains(cleanNew)) {
+          entry.value.tags.add(cleanNew);
+        }
+        await _saveSingleMetadata(entry.key, entry.value);
+      }
+    }
+  }
+
+  // Cuenta cuántas imágenes están usando una etiqueta específica
+  int countImagesWithTag(String tag) {
+    final cleanTag = tag.trim().toLowerCase();
+    int count = 0;
+    
+    // Recorremos todas las imágenes cargadas en memoria RAM
+    for (final metadata in _imageData.values) {
+      if (metadata.tags.contains(cleanTag)) {
+        count++;
+      }
+    }
+    return count;
+  }
 }
+
