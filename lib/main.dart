@@ -34,8 +34,11 @@ const String _startupActionKey = 'startup_action'; // bool
 const String _showNotificationsKey = 'show_notifications';
 const String _sortCriteriaKey = 'sort_criteria';
 const String _sortAscendingKey = 'sort_ascending';
+const String _showRatingsKey = 'show_ratings_thumbnail';
+const String _showTagsKey = 'show_tags_thumbnail';
 
 enum SortCriteria { date, name, size }
+
 enum CloseAction { exit, minimize }
 
 void main(List<String> args) async {
@@ -47,11 +50,12 @@ void main(List<String> args) async {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
   }
-  
+
   await windowManager.ensureInitialized();
   await localNotifier.setup(
     appName: 'GVortex',
-    shortcutPolicy: ShortcutPolicy.requireCreate, // <-- ESTA ES LA MAGIA PARA WINDOWS
+    shortcutPolicy:
+        ShortcutPolicy.requireCreate, // <-- ESTA ES LA MAGIA PARA WINDOWS
   );
 
   PackageInfo packageInfo = await PackageInfo.fromPlatform();
@@ -82,14 +86,37 @@ void main(List<String> args) async {
   runApp(MyApp(startHidden: startHidden));
 }
 
-class SiguienteImagenIntent extends Intent { const SiguienteImagenIntent(); }
-class AnteriorImagenIntent extends Intent { const AnteriorImagenIntent(); }
-class GridUpIntent extends Intent { const GridUpIntent(); }
-class GridDownIntent extends Intent { const GridDownIntent(); }
-class GridLeftIntent extends Intent { const GridLeftIntent(); }
-class GridRightIntent extends Intent { const GridRightIntent(); }
-class GridEnterIntent extends Intent { const GridEnterIntent(); }
-class CloseViewerIntent extends Intent { const CloseViewerIntent(); }
+class SiguienteImagenIntent extends Intent {
+  const SiguienteImagenIntent();
+}
+
+class AnteriorImagenIntent extends Intent {
+  const AnteriorImagenIntent();
+}
+
+class GridUpIntent extends Intent {
+  const GridUpIntent();
+}
+
+class GridDownIntent extends Intent {
+  const GridDownIntent();
+}
+
+class GridLeftIntent extends Intent {
+  const GridLeftIntent();
+}
+
+class GridRightIntent extends Intent {
+  const GridRightIntent();
+}
+
+class GridEnterIntent extends Intent {
+  const GridEnterIntent();
+}
+
+class CloseViewerIntent extends Intent {
+  const CloseViewerIntent();
+}
 
 class MyApp extends StatelessWidget {
   final bool startHidden; // <-- NUEVO
@@ -118,11 +145,13 @@ class MyApp extends StatelessWidget {
         ),
         scaffoldBackgroundColor: const Color(0xFF000000),
         // Tipografía del sistema (San Francisco en Apple, Segoe en Windows)
-        fontFamily: Platform.isMacOS || Platform.isIOS ? '.SF Pro Text' : 'Segoe UI',
-        
+        fontFamily:
+            Platform.isMacOS || Platform.isIOS ? '.SF Pro Text' : 'Segoe UI',
+
         // AppBars planos y translúcidos
         appBarTheme: const AppBarThemeData(
-          backgroundColor: Color(0xE61C1C1E), // Gris muy oscuro con ligera transparencia
+          backgroundColor:
+              Color(0xE61C1C1E), // Gris muy oscuro con ligera transparencia
           elevation: 0,
           scrolledUnderElevation: 0,
           centerTitle: true,
@@ -134,25 +163,28 @@ class MyApp extends StatelessWidget {
             letterSpacing: -0.5,
           ),
         ),
-        
+
         // Diálogos con bordes más suaves y sin sombras gigantes
         dialogTheme: const DialogThemeData(
           backgroundColor: Color(0xFF2C2C2E),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(12))),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.all(Radius.circular(12))),
           elevation: 10,
         ),
-        
+
         // Menús emergentes (Dropdowns) estilo panel flotante
         popupMenuTheme: PopupMenuThemeData(
           color: const Color(0xFF2C2C2E),
           elevation: 8,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(8),
-            side: const BorderSide(color: Colors.white12, width: 0.5), // Borde finísimo
+            side: const BorderSide(
+                color: Colors.white12, width: 0.5), // Borde finísimo
           ),
         ),
-        
-        dividerTheme: const DividerThemeData(color: Colors.white12, thickness: 0.5),
+
+        dividerTheme:
+            const DividerThemeData(color: Colors.white12, thickness: 0.5),
       ),
       home: AuthWrapper(startHidden: startHidden),
     );
@@ -190,11 +222,13 @@ class AuthWrapper extends StatefulWidget {
   State<AuthWrapper> createState() => _AuthWrapperState();
 }
 
-class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayListener {
+class _AuthWrapperState extends State<AuthWrapper>
+    with WindowListener, TrayListener {
   bool _isAuthenticated = false;
   late bool _isWindowVisible;
 
-  final GlobalKey<_VaultExplorerScreenState> _vaultExplorerKey = GlobalKey<_VaultExplorerScreenState>();
+  final GlobalKey<_VaultExplorerScreenState> _vaultExplorerKey =
+      GlobalKey<_VaultExplorerScreenState>();
 
   @override
   void initState() {
@@ -204,12 +238,24 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
     trayManager.addListener(this);
     _initTray();
   }
-  
+
   @override
   void dispose() {
     windowManager.removeListener(this);
     trayManager.removeListener(this);
     super.dispose();
+  }
+
+  void _requirePinAndGoHome() {
+    if (!mounted) return;
+
+    // 1. Cierra cualquier subcarpeta, visor de imágenes o ajustes abiertos
+    Navigator.of(context).popUntil((route) => route.isFirst);
+
+    // 2. Bloquea la app exigiendo el PIN nuevamente
+    setState(() {
+      _isAuthenticated = false;
+    });
   }
 
   Future<void> _initTray() async {
@@ -223,6 +269,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
   @override
   void onTrayIconMouseDown() {
     windowManager.show();
+    _requirePinAndGoHome();
     setState(() {
       _isWindowVisible = true;
       _isAuthenticated = false;
@@ -234,18 +281,17 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
   void onTrayIconRightMouseDown() async {
     // Leemos la variable directamente usando la GlobalKey
     final isPaused = _vaultExplorerKey.currentState?.isWatcherPaused ?? false;
-    
+
     Menu menu = Menu(items: [
       MenuItem(key: 'show_window', label: 'Mostrar Aplicación'),
       // Mostramos un texto distinto según el estado de la variable
       MenuItem(
-        key: 'toggle_watcher', 
-        label: isPaused ? '▶ Reanudar Vórtice' : '⏸ Pausar Vórtice'
-      ),
+          key: 'toggle_watcher',
+          label: isPaused ? '▶ Reanudar Vórtice' : '⏸ Pausar Vórtice'),
       MenuItem.separator(),
       MenuItem(key: 'exit_application', label: 'Cerrar Aplicación'),
     ]);
-    
+
     await trayManager.setContextMenu(menu);
     trayManager.popUpContextMenu();
   }
@@ -254,6 +300,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
   void onTrayMenuItemClick(MenuItem menuItem) {
     if (menuItem.key == 'show_window') {
       windowManager.show();
+      _requirePinAndGoHome();
       setState(() {
         _isWindowVisible = true;
         _isAuthenticated = false;
@@ -268,6 +315,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
   }
 
   void onWindowHide() {
+    _requirePinAndGoHome();
     setState(() {
       _isWindowVisible = false;
       // Le decimos a VaultExplorer que libere sus recursos de UI.
@@ -276,6 +324,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
   }
 
   void onWindowShow() {
+    _requirePinAndGoHome();
     setState(() {
       _isWindowVisible = true;
       _isAuthenticated = false; // Forzar re-autenticación por seguridad.
@@ -283,9 +332,10 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
       _vaultExplorerKey.currentState?.resume();
     });
   }
-  
+
   @override
   void onWindowMinimize() {
+    //_requirePinAndGoHome();
     // Si el usuario minimiza con el botón (-), también activamos la pausa
     _vaultExplorerKey.currentState?.pause();
   }
@@ -314,7 +364,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
             },
           ),
         ),
-        
+
         // 2. Pantallas de estado superpuestas (Bloqueo o Background)
         if (!_isWindowVisible)
           const BackgroundServiceScreen()
@@ -353,7 +403,7 @@ class VaultExplorerScreen extends StatefulWidget {
 }
 
 class _VaultExplorerScreenState extends State<VaultExplorerScreen>
-    with WindowListener{
+    with WindowListener {
   List<FileSystemEntity> _vaultContents = [];
   bool _isLoading = true;
   late bool _isPaused;
@@ -395,7 +445,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   // State for thumbnail size
   double _thumbnailExtent = 150.0;
-  
+
   // Scroll controller
   final ScrollController _scrollController = ScrollController();
 
@@ -413,30 +463,44 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
 
+  // State para visualización de miniaturas
+  bool _showRatingsOnThumbnail = true;
+  bool _showTagsCountOnThumbnail = true;
+
   // NUEVAS VARIABLES PARA EL MENÚ DE FILTRO ESTILO MAC
   final GlobalKey _sortButtonKey = GlobalKey();
   OverlayEntry? _sortOverlay;
 
   bool _isSupportedFile(String filePath) {
-  final ext = p.extension(filePath).toLowerCase();
-  return _isImageFile(filePath) || ['.mp4', '.mov', '.avi', '.mkv'].contains(ext);
+    final ext = p.extension(filePath).toLowerCase();
+    return _isImageFile(filePath) ||
+        ['.mp4', '.mov', '.avi', '.mkv'].contains(ext);
   }
 
   List<FileSystemEntity> _filteredVaultContents = [];
+
+  void _refreshUIPreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _showRatingsOnThumbnail = prefs.getBool(_showRatingsKey) ?? true;
+      _showTagsCountOnThumbnail = prefs.getBool(_showTagsKey) ?? true;
+    });
+  }
 
   void _applySearchFilter() {
     if (_searchQuery.isEmpty) {
       _filteredVaultContents = List.from(_vaultContents);
       return;
     }
-    
+
     final query = _searchQuery.toLowerCase();
     _filteredVaultContents = _vaultContents.where((entity) {
       if (entity is Directory) {
         return p.basename(entity.path).toLowerCase().contains(query);
       } else if (entity is File) {
         // Buscar por nombre limpio
-        final cleanName = _getDeobfuscatedName(p.basename(entity.path)).toLowerCase();
+        final cleanName =
+            _getDeobfuscatedName(p.basename(entity.path)).toLowerCase();
         if (cleanName.contains(query)) return true;
 
         // Buscar por etiquetas
@@ -452,7 +516,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       _scrollController.jumpTo(0.0);
     }
   }
-
 
   @override
   void initState() {
@@ -492,13 +555,34 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     final supportDir = await getApplicationSupportDirectory();
     _vaultRootDir = Directory(p.join(supportDir.path, 'vault'));
     _currentVaultDir = widget.currentDirectory ?? _vaultRootDir;
-    
+
     // Inicializa todos los servicios
     await _metadataService.initialize();
     await _thumbnailService.initialize();
 
     _initializeState();
     //_initTray();
+  }
+
+  Future<void> _syncPreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // Leemos los valores más recientes de la base de datos local
+    final sortIndex = prefs.getInt(_sortCriteriaKey) ?? SortCriteria.date.index;
+    final sortAscending = prefs.getBool(_sortAscendingKey) ?? true;
+    final showRatings = prefs.getBool(_showRatingsKey) ?? true;
+    final showTags = prefs.getBool(_showTagsKey) ?? true;
+
+    // Actualizamos el estado de esta pantalla específica
+    setState(() {
+      _currentSortCriteria = SortCriteria.values[sortIndex];
+      _sortAscending = sortAscending;
+      _showRatingsOnThumbnail = showRatings;
+      _showTagsCountOnThumbnail = showTags;
+    });
+
+    // Recargamos el contenido para que se aplique el nuevo ordenamiento
+    await _loadVaultContents();
   }
 
   /// Mueve una carpeta entera desde el Vórtice a la bóveda.
@@ -565,10 +649,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   // --- Window and Tray Listener Methods ---
   @override
-  void onWindowClose() async { // <-- Convertir a async
+  void onWindowClose() async {
+    // <-- Convertir a async
     // --- LÓGICA MODIFICADA ---
     final prefs = await SharedPreferences.getInstance();
-    final closeAction = prefs.getString(_closeActionKey) ?? CloseAction.minimize.name;
+    final closeAction =
+        prefs.getString(_closeActionKey) ?? CloseAction.minimize.name;
 
     if (closeAction == CloseAction.exit.name) {
       windowManager.destroy(); // Cierra la app
@@ -605,11 +691,15 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     final path = prefs.getString(_vortexFolderPathKey);
     final sortIndex = prefs.getInt(_sortCriteriaKey) ?? SortCriteria.date.index;
     final sortAscending = prefs.getBool(_sortAscendingKey) ?? true;
-    
+    final showRatings = prefs.getBool(_showRatingsKey) ?? true;
+    final showTags = prefs.getBool(_showTagsKey) ?? true;
+
     setState(() {
       _thumbnailExtent = savedSize;
       _currentSortCriteria = SortCriteria.values[sortIndex];
       _sortAscending = sortAscending;
+      _showRatingsOnThumbnail = showRatings;
+      _showTagsCountOnThumbnail = showTags;
     });
 
     if (path != null && path.isNotEmpty) {
@@ -631,7 +721,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     if (!await _currentVaultDir.exists()) {
       await _currentVaultDir.create(recursive: true);
     }
-    
+
     final contents = await _currentVaultDir.list().toList();
 
     // --- MAGIA DE OPTIMIZACIÓN (CACHÉ) ---
@@ -644,12 +734,26 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       for (final entity in contents) {
         if (entity is File) {
           if (_currentSortCriteria == SortCriteria.size) {
-            sizeCache[entity.path] = entity.lengthSync(); // Solo 1 lectura al disco duro por archivo
+            sizeCache[entity.path] =
+                entity.lengthSync(); // Solo 1 lectura al disco duro por archivo
           } else if (_currentSortCriteria == SortCriteria.name) {
-            nameCache[entity.path] = _getDeobfuscatedName(p.basename(entity.path)).toLowerCase();
+            nameCache[entity.path] =
+                _getDeobfuscatedName(p.basename(entity.path)).toLowerCase();
           } else if (_currentSortCriteria == SortCriteria.date) {
             final id = p.relative(entity.path, from: _vaultRootDir.path);
-            timeCache[entity.path] = _metadataService.getMetadataForImage(id).addedTimestamp;
+            int dbTime =
+                _metadataService.getMetadataForImage(id).addedTimestamp;
+
+            // --- PARCHE ANTISALTOS ---
+            // Si la imagen es antigua y tiene fecha 0 en la BD, usamos la fecha
+            // de modificación real del archivo físico en tu disco duro.
+            if (dbTime == 0) {
+              try {
+                dbTime = entity.lastModifiedSync().millisecondsSinceEpoch;
+              } catch (_) {}
+            }
+
+            timeCache[entity.path] = dbTime;
           }
         }
       }
@@ -672,13 +776,13 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             comparison = timeA.compareTo(timeB);
             if (comparison == 0) comparison = a.path.compareTo(b.path);
             break;
-            
+
           case SortCriteria.name:
             final nameA = nameCache[a.path] ?? '';
             final nameB = nameCache[b.path] ?? '';
             comparison = nameA.compareTo(nameB);
             break;
-            
+
           case SortCriteria.size:
             final sizeA = sizeCache[a.path] ?? 0;
             final sizeB = sizeCache[b.path] ?? 0;
@@ -686,21 +790,24 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             break;
         }
       } else if (a is Directory && b is Directory) {
-        comparison = p.basename(a.path).toLowerCase().compareTo(p.basename(b.path).toLowerCase());
+        comparison = p
+            .basename(a.path)
+            .toLowerCase()
+            .compareTo(p.basename(b.path).toLowerCase());
       }
 
       return _sortAscending ? comparison : -comparison;
     });
 
-    _vaultContents = contents; 
+    _vaultContents = contents;
     _applySearchFilter(); // Aplicamos el filtro antes de refrescar la UI
-    
+
     setState(() {
       _itemKeys.clear();
-      _isLoading = false; 
+      _isLoading = false;
       _shiftSelectionAnchorIndex = null;
     });
-    
+
     _thumbnailService.bulkGenerate(contents);
   }
 
@@ -746,23 +853,22 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   void _startWatcher(String path) {
     _watcherSubscription?.cancel();
     final watcher = DirectoryWatcher(path);
-    
+
     _watcherSubscription = watcher.events.listen((event) async {
       // Ahora escuchamos tanto creaciones como modificaciones
-      if ((event.type == ChangeType.ADD || event.type == ChangeType.MODIFY) && 
+      if ((event.type == ChangeType.ADD || event.type == ChangeType.MODIFY) &&
           _isSupportedFile(event.path)) {
-        
         final filePath = event.path;
-        
+
         // Si ya estamos vigilando este archivo, lo ignoramos para no saturar
         if (_processingFiles.contains(filePath)) return;
-        
+
         final file = File(filePath);
         _processingFiles.add(filePath); // Lo agregamos a la lista de espera
-        
+
         try {
           final isReady = await _waitUntilFileIsReady(file);
-          
+
           if (isReady && mounted) {
             await _absorbImage(file);
           }
@@ -789,10 +895,11 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       }
     } else {
       if (_vortexPath != null) {
-        await _absorbInitialVortexContents(Directory(_vortexPath!), reloadUI: false);
+        await _absorbInitialVortexContents(Directory(_vortexPath!),
+            reloadUI: false);
         _startWatcher(_vortexPath!);
         await _loadVaultContents(quiet: true);
-        
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Vigilancia del Vórtice reanudada.')),
@@ -817,7 +924,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         if (lastZero != -1) {
           final realBase = baseName.substring(0, lastZero); // Ej: imagen
           final cipheredExt = baseName.substring(lastZero); // Ej: 0qoh
-          
+
           // Insertamos el contador justo en medio: imagen (1)0qoh.vtx
           fileName = '$realBase ($counter)$cipheredExt$extension';
         } else {
@@ -833,7 +940,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     }
     return newPath;
   }
-  
+
   Future<void> _moveFileRobustly(File sourceFile, String newPath) async {
     try {
       await sourceFile.rename(newPath);
@@ -847,18 +954,18 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   Future<void> _absorbImage(File imageFile, {bool reloadUI = true}) async {
     if (!await imageFile.exists()) return;
-    
+
     // 1. Conservamos el nombre original exactamente como viene
     final String originalFileName = p.basename(imageFile.path);
-    
+
     // 2. Solo aplicamos la ofuscación (.vtx)
     String newName = _obfuscateName(originalFileName);
-    
+
     final newPathInVault = await _getUniquePath(_vaultRootDir, newName);
 
     try {
       await _moveFileRobustly(imageFile, newPathInVault);
-      
+      await Future.delayed(const Duration(milliseconds: 1));
       // 3. NUEVO: Guardamos la fecha exacta de ingreso en la Base de Datos
       final imageId = p.relative(newPathInVault, from: _vaultRootDir.path);
       final timestamp = DateTime.now().millisecondsSinceEpoch;
@@ -868,15 +975,16 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       if (_isPaused) {
         _backgroundAbsorbedCount++;
         _notificationTimer?.cancel();
-        
+
         _notificationTimer = Timer(const Duration(seconds: 3), () async {
           final prefs = await SharedPreferences.getInstance();
           final showNotif = prefs.getBool(_showNotificationsKey) ?? true;
-          
+
           if (showNotif && _backgroundAbsorbedCount > 0) {
             final notification = LocalNotification(
               title: "GVortex",
-              body: "Se han enviado $_backgroundAbsorbedCount archivo(s) a la bóveda.",
+              body:
+                  "Se han enviado $_backgroundAbsorbedCount archivo(s) a la bóveda.",
             );
             await notification.show();
             _backgroundAbsorbedCount = 0;
@@ -892,8 +1000,9 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       debugPrint("Error al absorber ${imageFile.path}: $e");
     }
   }
-  
-  Future<void> _absorbInitialVortexContents(Directory vortexDir, {bool reloadUI = true}) async {
+
+  Future<void> _absorbInitialVortexContents(Directory vortexDir,
+      {bool reloadUI = true}) async {
     if (!await vortexDir.exists()) return;
 
     final contents = await vortexDir.list().toList();
@@ -909,7 +1018,9 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         } else {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Carpeta "${p.basename(entity.path)}" ignorada: contiene archivos no válidos o está vacía.')),
+              SnackBar(
+                  content: Text(
+                      'Carpeta "${p.basename(entity.path)}" ignorada: contiene archivos no válidos o está vacía.')),
             );
           }
         }
@@ -921,11 +1032,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     }
   }
 
-  Future<void> _moveEntity(FileSystemEntity entity, Directory destination) async {
+  Future<void> _moveEntity(
+      FileSystemEntity entity, Directory destination) async {
     try {
       final entityName = p.basename(entity.path);
       final newPath = await _getUniquePath(destination, entityName);
-      
+
       // --- INICIO DE LA MODIFICACIÓN ---
       // Calculamos las rutas relativas (IDs) ANTES de mover el archivo
       final oldId = p.relative(entity.path, from: _vaultRootDir.path);
@@ -940,7 +1052,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       // Le avisamos a la base de datos que la ruta cambió para que mueva las etiquetas
       await _metadataService.updateImagePath(oldId, newId);
       // --- FIN DE LA MODIFICACIÓN ---
-
     } catch (e) {
       debugPrint("Error moving entity: $e");
       if (mounted) {
@@ -970,18 +1081,18 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   Future<void> _handlePaste() async {
     _hideContextMenu();
     if (_VaultExplorerScreenState._clipboard.isEmpty) return;
-    
+
     for (final entity in _VaultExplorerScreenState._clipboard) {
       if (p.equals(p.dirname(entity.path), _currentVaultDir.path)) {
         continue;
       }
       await _moveEntity(entity, _currentVaultDir);
     }
-    
+
     setState(() {
       _VaultExplorerScreenState._clipboard = [];
     });
-    
+
     await _loadVaultContents(quiet: true);
   }
 
@@ -1035,12 +1146,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
     // Calculamos el espacio máximo disponible para evitar que se salga de la pantalla
     // Le restamos 16 pixeles como margen de seguridad con el borde
-    final maxAvailableHeight = isBottomHalf 
-        ? position.dy - 16.0 
+    final maxAvailableHeight = isBottomHalf
+        ? position.dy - 16.0
         : screenSize.height - position.dy - 16.0;
 
     final hasImageSelected = _selectedItems.any((item) => item is File);
-    
+
     final items = <Widget>[
       if (_selectedItems.isNotEmpty)
         _ContextMenuItemWidget(
@@ -1049,16 +1160,25 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             icon: Icons.drive_file_move_outline),
       if (_VaultExplorerScreenState._clipboard.isNotEmpty)
         _ContextMenuItemWidget(
-            title: 'Pegar',
-            onTap: _handlePaste,
-            icon: Icons.content_paste_go),
-      
+            title: 'Pegar', onTap: _handlePaste, icon: Icons.content_paste_go),
+      if (_selectedItems.length == 1)
+        _ContextMenuItemWidget(
+          title: 'Renombrar',
+          onTap: () {
+            _hideContextMenu();
+            _showRenameDialog(_selectedItems.first);
+          },
+          icon: Icons.drive_file_rename_outline,
+        ),
       if (hasImageSelected)
         _ContextMenuItemWidget(
           title: 'Etiquetas',
           onTap: () {
             _hideContextMenu();
-            final selectedImageIds = _selectedItems.whereType<File>().map((f) => p.relative(f.path, from: _vaultRootDir.path)).toList();
+            final selectedImageIds = _selectedItems
+                .whereType<File>()
+                .map((f) => p.relative(f.path, from: _vaultRootDir.path))
+                .toList();
 
             showDialog(
               context: context,
@@ -1070,7 +1190,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           },
           icon: Icons.label_outline,
         ),
-      
       if (hasImageSelected)
         _ContextMenuItemWidget(
           title: 'Calificación',
@@ -1080,7 +1199,16 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           },
           icon: Icons.star_outline,
         ),
-      
+      if (_selectedItems.length ==
+          1) // Solo mostramos propiedades si hay 1 solo elemento seleccionado
+        _ContextMenuItemWidget(
+          title: 'Propiedades',
+          onTap: () {
+            _hideContextMenu();
+            _showPropertiesDialog(_selectedItems.first);
+          },
+          icon: Icons.info_outline,
+        ),
       if (_selectedItems.isNotEmpty) const Divider(height: 1, thickness: 1),
       if (_selectedItems.isNotEmpty)
         _ContextMenuItemWidget(
@@ -1111,7 +1239,9 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       ],*/
     ];
 
-    if (items.whereType<_ContextMenuItemWidget>().isEmpty && _VaultExplorerScreenState._clipboard.isEmpty && !hasImageSelected) return;
+    if (items.whereType<_ContextMenuItemWidget>().isEmpty &&
+        _VaultExplorerScreenState._clipboard.isEmpty &&
+        !hasImageSelected) return;
 
     _contextMenuOverlay = OverlayEntry(
       builder: (context) {
@@ -1124,8 +1254,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                   setState(() => _selectedItems.clear());
                 },
                 onSecondaryTap: () {
-                   _hideContextMenu();
-                   setState(() => _selectedItems.clear());
+                  _hideContextMenu();
+                  setState(() => _selectedItems.clear());
                 },
                 child: Container(color: Colors.transparent),
               ),
@@ -1149,7 +1279,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                       color: const Color(0xFF252525).withOpacity(0.65),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(8.0),
-                        side: const BorderSide(color: Colors.white12, width: 0.5),
+                        side:
+                            const BorderSide(color: Colors.white12, width: 0.5),
                       ),
                       child: IntrinsicWidth(
                         // 3. SCROLL INTEGRADO
@@ -1171,10 +1302,10 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     );
     Overlay.of(context).insert(_contextMenuOverlay!);
   }
-  
+
   void _showRatingMenu(BuildContext context, Offset position) {
     final screenSize = MediaQuery.of(context).size;
-    
+
     // Lógica dinámica
     final isBottomHalf = position.dy > screenSize.height / 2;
     final isRightHalf = position.dx > screenSize.width / 2;
@@ -1184,24 +1315,25 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     final left = isRightHalf ? null : position.dx;
     final right = isRightHalf ? screenSize.width - position.dx : null;
 
-    final maxAvailableHeight = isBottomHalf 
-        ? position.dy - 16.0 
+    final maxAvailableHeight = isBottomHalf
+        ? position.dy - 16.0
         : screenSize.height - position.dy - 16.0;
 
     int? currentRating;
     final selectedFiles = _selectedItems.whereType<File>().toList();
     if (selectedFiles.isNotEmpty) {
-      final firstId = p.relative(selectedFiles.first.path, from: _vaultRootDir.path);
+      final firstId =
+          p.relative(selectedFiles.first.path, from: _vaultRootDir.path);
       currentRating = _metadataService.getMetadataForImage(firstId).rating;
       for (var file in selectedFiles.skip(1)) {
         final id = p.relative(file.path, from: _vaultRootDir.path);
         if (_metadataService.getMetadataForImage(id).rating != currentRating) {
-          currentRating = null; 
+          currentRating = null;
           break;
         }
       }
     }
-  
+
     final items = List.generate(6, (index) {
       final isSelected = index == currentRating;
       return InkWell(
@@ -1217,10 +1349,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
           child: Row(
             children: [
-              Icon(isSelected ? Icons.check : null, size: 18, color: Colors.white), 
+              Icon(isSelected ? Icons.check : null,
+                  size: 18, color: Colors.white),
               const SizedBox(width: 12),
               if (index == 0)
-                const Text("Sin calificar", style: TextStyle(color: Colors.white))
+                const Text("Sin calificar",
+                    style: TextStyle(color: Colors.white))
               else
                 RatingStarsDisplay(rating: index, iconSize: 20),
             ],
@@ -1241,7 +1375,10 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               ),
             ),
             Positioned(
-              top: top, bottom: bottom, left: left, right: right,
+              top: top,
+              bottom: bottom,
+              left: left,
+              right: right,
               child: ConstrainedBox(
                 constraints: BoxConstraints(maxHeight: maxAvailableHeight),
                 child: ClipRRect(
@@ -1253,7 +1390,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                       color: const Color(0xFF252525).withOpacity(0.65),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(8.0),
-                        side: const BorderSide(color: Colors.white12, width: 0.5),
+                        side:
+                            const BorderSide(color: Colors.white12, width: 0.5),
                       ),
                       child: IntrinsicWidth(
                         child: SingleChildScrollView(
@@ -1281,12 +1419,13 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       _contextMenuOverlay = null;
     }
   }
-  
+
   void _showFullScreenViewer(List<File> imageFiles, int initialIndex) async {
     _hideContextMenu();
-    
+
     final tappedFile = imageFiles[initialIndex];
-    final initialIndexInVault = _filteredVaultContents.indexWhere((e) => e.path == tappedFile.path);
+    final initialIndexInVault =
+        _filteredVaultContents.indexWhere((e) => e.path == tappedFile.path);
 
     if (initialIndexInVault != -1) {
       setState(() {
@@ -1295,7 +1434,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         _shiftSelectionAnchorIndex = initialIndexInVault;
       });
 
-      // Esperamos 350ms a que la animación de entrada (Hero/Ruta) termine 
+      // Esperamos 350ms a que la animación de entrada (Hero/Ruta) termine
       // para centrar la cuadrícula de fondo de manera invisible.
       Future.delayed(const Duration(milliseconds: 350), () {
         if (mounted) {
@@ -1312,13 +1451,14 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           imageFiles: imageFiles,
           initialIndex: initialIndex,
           exportCallback: (file) async => await _handleSingleExport(file),
-          onClose: () => Navigator.pop(context), 
+          onClose: () => Navigator.pop(context),
           metadataService: _metadataService,
           vaultRootPath: _vaultRootDir.path,
           onPageChangedCallback: (fileIndex) {
             final lastViewedFile = imageFiles[fileIndex];
-            final indexInVault = _filteredVaultContents.indexWhere((e) => e.path == lastViewedFile.path);
-            
+            final indexInVault = _filteredVaultContents
+                .indexWhere((e) => e.path == lastViewedFile.path);
+
             if (indexInVault != -1) {
               setState(() {
                 _focusedIndex = indexInVault;
@@ -1337,8 +1477,9 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     if (returnedIndex != null) {
       final lastViewedFile = imageFiles[returnedIndex];
       // Buscamos su posición real en la cuadrícula (ya que la cuadrícula incluye carpetas)
-      final indexInVault = _filteredVaultContents.indexWhere((e) => e.path == lastViewedFile.path);
-      
+      final indexInVault = _filteredVaultContents
+          .indexWhere((e) => e.path == lastViewedFile.path);
+
       if (indexInVault != -1) {
         setState(() {
           _focusedIndex = indexInVault;
@@ -1350,57 +1491,61 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
     if (mounted) {
       Future.delayed(const Duration(milliseconds: 50), () {
-        _scrollToFocusedItem(animate: true); 
+        _scrollToFocusedItem(animate: true);
       });
     }
   }
 
   // NUEVO: Método optimizado de Scroll
- void _scrollToFocusedItem({bool animate = false}) {
+  void _scrollToFocusedItem({bool animate = false}) {
     // CAMBIO 1: Usar _filteredVaultContents
-    if (_focusedIndex < 0 || _focusedIndex >= _filteredVaultContents.length) return;
+    if (_focusedIndex < 0 || _focusedIndex >= _filteredVaultContents.length)
+      return;
 
     // CAMBIO 2: Obtener la entidad y buscar por su ruta
     final entity = _filteredVaultContents[_focusedIndex];
     final key = _itemKeys[entity.path];
-    
+
     // ... mantén el resto de la lógica igual, pero asegúrate de usar la llave correcta abajo:
-    
+
     // CASO 1: El elemento ya está dibujado en memoria (visible o cerca)
     if (key != null && key.currentContext != null) {
       Scrollable.ensureVisible(
         key.currentContext!,
-        alignment: 0.5, 
+        alignment: 0.5,
         duration: animate ? const Duration(milliseconds: 300) : Duration.zero,
         curve: Curves.easeInOut,
       );
-    } 
+    }
     // CASO 2: El elemento está tan lejos que Flutter lo destruyó para ahorrar RAM
     else {
       // 1. Calculamos matemáticamente en qué fila debería estar
-      final usableWidth = MediaQuery.of(context).size.width - 48.0; 
+      final usableWidth = MediaQuery.of(context).size.width - 48.0;
       int crossAxisCount = (usableWidth / _thumbnailExtent).ceil();
       if (crossAxisCount < 1) crossAxisCount = 1;
 
       int row = _focusedIndex ~/ crossAxisCount;
-      double estimatedOffset = row * (_thumbnailExtent + 8.0); 
-      
+      double estimatedOffset = row * (_thumbnailExtent + 8.0);
+
       // 2. Calculamos el salto para que quede centrado en la pantalla
       double viewportHeight = _scrollController.position.viewportDimension;
-      double targetOffset = estimatedOffset - (viewportHeight / 2) + (_thumbnailExtent / 2);
-      targetOffset = targetOffset.clamp(0.0, _scrollController.position.maxScrollExtent);
+      double targetOffset =
+          estimatedOffset - (viewportHeight / 2) + (_thumbnailExtent / 2);
+      targetOffset =
+          targetOffset.clamp(0.0, _scrollController.position.maxScrollExtent);
 
       // 3. Saltamos/Animamos a esa zona
       if (animate) {
-        _scrollController.animateTo(
-          targetOffset, 
-          duration: const Duration(milliseconds: 300), 
-          curve: Curves.easeInOut
-        ).then((_) {
+        _scrollController
+            .animateTo(targetOffset,
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeInOut)
+            .then((_) {
           // CAMBIO 3: Volver a buscar la llave por ruta
           final newKey = _itemKeys[entity.path];
           if (newKey?.currentContext != null) {
-            Scrollable.ensureVisible(newKey!.currentContext!, alignment: 0.5, duration: Duration.zero);
+            Scrollable.ensureVisible(newKey!.currentContext!,
+                alignment: 0.5, duration: Duration.zero);
           }
         });
       } else {
@@ -1410,7 +1555,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           // CAMBIO 4: Volver a buscar la llave por ruta
           final newKey = _itemKeys[entity.path];
           if (newKey?.currentContext != null) {
-            Scrollable.ensureVisible(newKey!.currentContext!, alignment: 0.5, duration: Duration.zero);
+            Scrollable.ensureVisible(newKey!.currentContext!,
+                alignment: 0.5, duration: Duration.zero);
           }
         });
       }
@@ -1428,12 +1574,13 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               setAuthenticated: widget.setAuthenticated,
             ),
           ),
-        ).then((_) => _loadVaultContents());
+        ).then((_) => _syncPreferences());
       } else if (entity is File) {
         final imageFiles = _filteredVaultContents.whereType<File>().toList();
-        int initialIndex = imageFiles.indexWhere((f) => p.equals(f.path, entity.path));
+        int initialIndex =
+            imageFiles.indexWhere((f) => p.equals(f.path, entity.path));
         if (initialIndex == -1) {
-          initialIndex = 0; 
+          initialIndex = 0;
         }
         if (imageFiles.isNotEmpty) {
           _showFullScreenViewer(imageFiles, initialIndex);
@@ -1447,11 +1594,13 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
     final isShiftPressed = RawKeyboard.instance.keysPressed
             .contains(LogicalKeyboardKey.shiftLeft) ||
-        RawKeyboard.instance.keysPressed.contains(LogicalKeyboardKey.shiftRight);
+        RawKeyboard.instance.keysPressed
+            .contains(LogicalKeyboardKey.shiftRight);
 
     final isCtrlPressed = RawKeyboard.instance.keysPressed
             .contains(LogicalKeyboardKey.controlLeft) ||
-        RawKeyboard.instance.keysPressed.contains(LogicalKeyboardKey.controlRight) ||
+        RawKeyboard.instance.keysPressed
+            .contains(LogicalKeyboardKey.controlRight) ||
         (Platform.isMacOS &&
             (RawKeyboard.instance.keysPressed
                     .contains(LogicalKeyboardKey.metaLeft) ||
@@ -1465,10 +1614,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           _shiftSelectionAnchorIndex = index;
           _selectedItems = {entity};
         } else {
-          final start =
-              index < _shiftSelectionAnchorIndex! ? index : _shiftSelectionAnchorIndex!;
-          final end =
-              index > _shiftSelectionAnchorIndex! ? index : _shiftSelectionAnchorIndex!;
+          final start = index < _shiftSelectionAnchorIndex!
+              ? index
+              : _shiftSelectionAnchorIndex!;
+          final end = index > _shiftSelectionAnchorIndex!
+              ? index
+              : _shiftSelectionAnchorIndex!;
           _selectedItems =
               _filteredVaultContents.sublist(start, end + 1).toSet();
         }
@@ -1488,7 +1639,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           _onItemTap(entity, isDoubleClick: true);
         } else {
           _selectedItems = {entity};
-          _shiftSelectionAnchorIndex = index; 
+          _shiftSelectionAnchorIndex = index;
 
           _lastTappedEntity = entity;
           _doubleTapTimer?.cancel();
@@ -1499,7 +1650,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       }
     });
   }
-
 
   // --- Marquee Selection Handlers ---
   void _onMarqueeStart(DragStartDetails details) {
@@ -1563,7 +1713,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       if (directoryPath != null) {
         setState(() => _isLoading = true);
         final directory = Directory(directoryPath);
-        
+
         await _absorbInitialVortexContents(directory, reloadUI: false);
 
         final prefs = await SharedPreferences.getInstance();
@@ -1605,8 +1755,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         lowercasedPath.endsWith('.webp');
   }
 
-  
-
   Future<bool?> _showConfirmationDialog(
       {required String title, required String content}) {
     return showDialog<bool>(
@@ -1623,28 +1771,42 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               width: 350,
               padding: const EdgeInsets.all(24),
               decoration: BoxDecoration(
-                color: const Color(0xFF252525).withOpacity(0.65), // Gris translúcido
+                color: const Color(0xFF252525)
+                    .withOpacity(0.65), // Gris translúcido
                 border: Border.all(color: Colors.white12, width: 0.5),
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white), textAlign: TextAlign.center),
+                  Text(title,
+                      style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white),
+                      textAlign: TextAlign.center),
                   const SizedBox(height: 12),
-                  Text(content, style: const TextStyle(fontSize: 14, color: Colors.white70), textAlign: TextAlign.center),
+                  Text(content,
+                      style:
+                          const TextStyle(fontSize: 14, color: Colors.white70),
+                      textAlign: TextAlign.center),
                   const SizedBox(height: 24),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
                       TextButton(
                         onPressed: () => Navigator.of(context).pop(false),
-                        style: TextButton.styleFrom(foregroundColor: Colors.white70),
-                        child: const Text('Cancelar', style: TextStyle(fontWeight: FontWeight.w500)),
+                        style: TextButton.styleFrom(
+                            foregroundColor: Colors.white70),
+                        child: const Text('Cancelar',
+                            style: TextStyle(fontWeight: FontWeight.w500)),
                       ),
                       TextButton(
                         onPressed: () => Navigator.of(context).pop(true),
-                        style: TextButton.styleFrom(foregroundColor: const Color(0xFF0A84FF)), // Azul Mac
-                        child: const Text('Aceptar', style: TextStyle(fontWeight: FontWeight.w600)),
+                        style: TextButton.styleFrom(
+                            foregroundColor:
+                                const Color(0xFF0A84FF)), // Azul Mac
+                        child: const Text('Aceptar',
+                            style: TextStyle(fontWeight: FontWeight.w600)),
                       ),
                     ],
                   )
@@ -1663,12 +1825,11 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         context: context,
         barrierColor: Colors.black.withOpacity(0.4),
         builder: (context) {
-          
           // 1. Extraemos la lógica a una función local para reusarla
           Future<void> handleCreate() async {
             if (_folderNameController.text.isNotEmpty) {
-              final newDir = Directory(p.join(
-                  _currentVaultDir.path, _folderNameController.text));
+              final newDir = Directory(
+                  p.join(_currentVaultDir.path, _folderNameController.text));
               if (!await newDir.exists()) {
                 await newDir.create();
                 if (mounted) Navigator.of(context).pop();
@@ -1694,18 +1855,24 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Text('Crear Nueva Carpeta', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white)),
+                      const Text('Crear Nueva Carpeta',
+                          style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white)),
                       const SizedBox(height: 16),
                       TextField(
                         controller: _folderNameController,
                         autofocus: true,
                         style: const TextStyle(color: Colors.white),
                         // 2. Agregamos onSubmitted para escuchar la tecla ENTER
-                        onSubmitted: (_) => handleCreate(), 
+                        onSubmitted: (_) => handleCreate(),
                         decoration: InputDecoration(
                           filled: true,
-                          fillColor: const Color(0xFF1C1C1E).withOpacity(0.8), // Campo de texto oscuro
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          fillColor: const Color(0xFF1C1C1E)
+                              .withOpacity(0.8), // Campo de texto oscuro
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 12),
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(8),
                             borderSide: BorderSide.none,
@@ -1720,13 +1887,18 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                         children: [
                           TextButton(
                             onPressed: () => Navigator.of(context).pop(),
-                            style: TextButton.styleFrom(foregroundColor: Colors.white70),
-                            child: const Text('Cancelar', style: TextStyle(fontWeight: FontWeight.w500)),
+                            style: TextButton.styleFrom(
+                                foregroundColor: Colors.white70),
+                            child: const Text('Cancelar',
+                                style: TextStyle(fontWeight: FontWeight.w500)),
                           ),
                           TextButton(
-                            onPressed: handleCreate, // 3. Reusamos la función aquí
-                            style: TextButton.styleFrom(foregroundColor: const Color(0xFF0A84FF)),
-                            child: const Text('Crear', style: TextStyle(fontWeight: FontWeight.w600)),
+                            onPressed:
+                                handleCreate, // 3. Reusamos la función aquí
+                            style: TextButton.styleFrom(
+                                foregroundColor: const Color(0xFF0A84FF)),
+                            child: const Text('Crear',
+                                style: TextStyle(fontWeight: FontWeight.w600)),
                           ),
                         ],
                       )
@@ -1739,6 +1911,151 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         });
   }
 
+  Future<void> _showRenameDialog(FileSystemEntity entity) async {
+    final isFile = entity is File;
+    String currentName = p.basename(entity.path);
+
+    // Si es archivo, extraemos el nombre limpio sin extensiones para el TextField
+    if (isFile) {
+      currentName = _getDeobfuscatedName(currentName);
+      currentName = p.basenameWithoutExtension(currentName);
+    }
+
+    final TextEditingController renameController =
+        TextEditingController(text: currentName);
+
+    // Seleccionamos todo el texto por defecto para editar más rápido
+    renameController.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: currentName.length,
+    );
+
+    final bool? confirm = await showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.4),
+      builder: (context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(14.0),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+              child: Container(
+                width: 350,
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF252525).withOpacity(0.65),
+                  border: Border.all(color: Colors.white12, width: 0.5),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('Renombrar',
+                        style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white)),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: renameController,
+                      autofocus: true,
+                      style: const TextStyle(color: Colors.white),
+                      onSubmitted: (_) => Navigator.of(context).pop(true),
+                      decoration: InputDecoration(
+                        filled: true,
+                        fillColor: const Color(0xFF1C1C1E).withOpacity(0.8),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 12),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(false),
+                          style: TextButton.styleFrom(
+                              foregroundColor: Colors.white70),
+                          child: const Text('Cancelar',
+                              style: TextStyle(fontWeight: FontWeight.w500)),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(true),
+                          style: TextButton.styleFrom(
+                              foregroundColor: const Color(0xFF0A84FF)),
+                          child: const Text('Guardar',
+                              style: TextStyle(fontWeight: FontWeight.w600)),
+                        ),
+                      ],
+                    )
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
+    if (confirm == true &&
+        renameController.text.isNotEmpty &&
+        renameController.text.trim() != currentName) {
+      final newNameInput = renameController.text.trim();
+      String finalNewName;
+
+      if (isFile) {
+        // Recuperamos la extensión real oculta (.png, .mp4, etc.)
+        final realExt = _getRealExtension(entity.path);
+        // Ensamblamos el nombre como si no estuviera cifrado (ej. "MiFoto.png")
+        final nameWithExt = '$newNameInput$realExt';
+        // Lo pasamos por tu ofuscador para que le devuelva el formato .vtx (ej. "MiFoto0qoh.vtx")
+        finalNewName = _obfuscateName(nameWithExt);
+      } else {
+        // Si es carpeta, se queda el nombre normal
+        finalNewName = newNameInput;
+      }
+
+      final destinationDir = Directory(p.dirname(entity.path));
+      // Nos aseguramos de que el nombre no exista ya (le añade (1), (2) si es necesario)
+      final finalUniquePath =
+          await _getUniquePath(destinationDir, finalNewName);
+
+      try {
+        final oldId = p.relative(entity.path, from: _vaultRootDir.path);
+        final newId = p.relative(finalUniquePath, from: _vaultRootDir.path);
+
+        if (isFile) {
+          // ¡NUEVO! Renombramos la miniatura existente en lugar de borrarla
+          await _thumbnailService.renameThumbnail(entity.path, finalUniquePath);
+          await _moveFileRobustly(entity as File, finalUniquePath);
+        } else {
+          await entity.rename(finalUniquePath);
+        }
+
+        // ¡MAGIA! Actualizamos la Base de Datos para que las etiquetas y estrellas migren a la nueva ruta
+        await _metadataService.updateImagePath(oldId, newId);
+
+        setState(() {
+          _selectedItems.clear(); // Limpiamos la selección
+        });
+
+        // Recargamos la interfaz
+        await _loadVaultContents(quiet: true);
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error al renombrar: $e')),
+          );
+        }
+      }
+    }
+  }
+
   void _showSortMenu(BuildContext context) {
     if (_sortOverlay != null) {
       _sortOverlay?.remove();
@@ -1746,7 +2063,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       return;
     }
 
-    final RenderBox? button = _sortButtonKey.currentContext?.findRenderObject() as RenderBox?;
+    final RenderBox? button =
+        _sortButtonKey.currentContext?.findRenderObject() as RenderBox?;
     if (button == null) return;
     final position = button.localToGlobal(Offset.zero);
 
@@ -1765,7 +2083,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
           child: Row(
             children: [
-              Icon(isSelected ? Icons.check : null, size: 18, color: Colors.white),
+              Icon(isSelected ? Icons.check : null,
+                  size: 18, color: Colors.white),
               const SizedBox(width: 12),
               Text(title, style: const TextStyle(color: Colors.white)),
             ],
@@ -1789,7 +2108,9 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             ),
             Positioned(
               top: position.dy + button.size.height + 8,
-              right: MediaQuery.of(context).size.width - position.dx - button.size.width,
+              right: MediaQuery.of(context).size.width -
+                  position.dx -
+                  button.size.width,
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(8.0),
                 child: BackdropFilter(
@@ -1805,26 +2126,42 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          buildMenuItem('Por fecha de ingreso', SortCriteria.date),
-                          buildMenuItem('Por nombre original', SortCriteria.name),
-                          buildMenuItem('Por tamaño de archivo', SortCriteria.size),
+                          buildMenuItem(
+                              'Por fecha de ingreso', SortCriteria.date),
+                          buildMenuItem(
+                              'Por nombre original', SortCriteria.name),
+                          buildMenuItem(
+                              'Por tamaño de archivo', SortCriteria.size),
                           const Divider(height: 1, color: Colors.white12),
                           InkWell(
                             onTap: () async {
                               _sortOverlay?.remove();
                               _sortOverlay = null;
-                              final prefs = await SharedPreferences.getInstance();
+                              final prefs =
+                                  await SharedPreferences.getInstance();
                               setState(() => _sortAscending = !_sortAscending);
-                              await prefs.setBool(_sortAscendingKey, _sortAscending);
+                              await prefs.setBool(
+                                  _sortAscendingKey, _sortAscending);
                               await _loadVaultContents(quiet: true);
                             },
                             child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 16.0, vertical: 12.0),
                               child: Row(
                                 children: [
-                                  Icon(_sortAscending ? Icons.arrow_downward : Icons.arrow_upward, size: 18, color: Colors.white),
+                                  Icon(
+                                      _sortAscending
+                                          ? Icons.arrow_downward
+                                          : Icons.arrow_upward,
+                                      size: 18,
+                                      color: Colors.white),
                                   const SizedBox(width: 12),
-                                  Text(_sortAscending ? 'Orden Ascendente' : 'Orden Descendente', style: const TextStyle(color: Colors.white)),
+                                  Text(
+                                      _sortAscending
+                                          ? 'Orden Ascendente'
+                                          : 'Orden Descendente',
+                                      style:
+                                          const TextStyle(color: Colors.white)),
                                 ],
                               ),
                             ),
@@ -1856,7 +2193,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             IconButton(
               icon: Icon(
                 _isSearchVisible ? Icons.search_off : Icons.search,
-                color: _isSearchVisible ? const Color(0xFF0A84FF) : Colors.white,
+                color:
+                    _isSearchVisible ? const Color(0xFF0A84FF) : Colors.white,
               ),
               tooltip: 'Buscar (Nombre o Etiqueta)',
               onPressed: () {
@@ -1875,10 +2213,14 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                 }
               },
             ),
-          if (!_isLoading && _vortexPath != null && widget.currentDirectory == null)
+          if (!_isLoading &&
+              _vortexPath != null &&
+              widget.currentDirectory == null)
             IconButton(
               icon: Icon(
-                _isWatcherPaused ? Icons.play_circle_outline : Icons.pause_circle_outline,
+                _isWatcherPaused
+                    ? Icons.play_circle_outline
+                    : Icons.pause_circle_outline,
                 color: _isWatcherPaused ? Colors.amber : Colors.white,
               ),
               tooltip: _isWatcherPaused ? 'Reanudar vórtice' : 'Pausar vórtice',
@@ -1898,20 +2240,19 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               tooltip: 'Restaurar todo y olvidar carpeta',
               onPressed: _restoreAllAndClear,
             ),*/
+          if (!_isLoading && _vortexPath != null)
             if (!_isLoading && _vortexPath != null)
-            if (!_isLoading && _vortexPath != null)
-            IconButton(
-              key: _sortButtonKey,
-              icon: const Icon(Icons.sort),
-              tooltip: 'Ordenar elementos',
-              onPressed: () => _showSortMenu(context),
-            ),
-            IconButton(
+              IconButton(
+                key: _sortButtonKey,
+                icon: const Icon(Icons.sort),
+                tooltip: 'Ordenar elementos',
+                onPressed: () => _showSortMenu(context),
+              ),
+          IconButton(
             icon: const Icon(Icons.settings_outlined),
             tooltip: 'Ajustes',
             onPressed: _openSettings,
           ),
-          
         ],
       ),
       body: Column(
@@ -1934,24 +2275,27 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       floatingActionButton: widget.currentDirectory == null
           ? FloatingActionButton.extended(
               elevation: 4, // Sombra más controlada
-              backgroundColor: const Color(0xFF2C2C2E), // Gris en lugar de color primario
+              backgroundColor:
+                  const Color(0xFF2C2C2E), // Gris en lugar de color primario
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10), // Bordes menos redondos
+                borderRadius:
+                    BorderRadius.circular(10), // Bordes menos redondos
                 side: const BorderSide(color: Colors.white12, width: 0.5),
               ),
               onPressed: _selectVortexFolder,
               label: Text(
                 _vortexPath == null ? 'Seleccionar Vórtice' : 'Cambiar Vórtice',
-                style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 12),
+                style:
+                    const TextStyle(fontWeight: FontWeight.w500, fontSize: 12),
               ),
               icon: const Icon(Icons.all_inclusive, size: 18),
             )
           : null,
     );
   }
-  
-  Widget _buildThumbnailSlider(){
+
+  Widget _buildThumbnailSlider() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16.0),
       child: Row(
@@ -2031,13 +2375,13 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                   rect: _marqueeRect!,
                   child: Container(
                     decoration: BoxDecoration(
-                      border: Border.all(
-                          color: Colors.deepPurpleAccent, width: 1),
+                      border:
+                          Border.all(color: Colors.deepPurpleAccent, width: 1),
                       color: Colors.deepPurpleAccent.withOpacity(0.2),
                     ),
                   ),
                 ),
-                Positioned(
+              Positioned(
                 top: 0,
                 left: 0,
                 right: 0,
@@ -2054,35 +2398,64 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                           child: Container(
                             width: 350,
                             decoration: BoxDecoration(
-                              color: const Color(0xFF252525).withOpacity(0.65),
-                              border: Border.all(color: Colors.white12, width: 0.5),
-                              boxShadow: [
-                                BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 10, offset: const Offset(0, 4))
-                              ]
-                            ),
-                            child: TextField(
-                              controller: _searchController,
-                              focusNode: _searchFocusNode,
-                              style: const TextStyle(color: Colors.white, fontSize: 14),
-                              onChanged: (value) {setState(() {_searchQuery = value;_applySearchFilter();});},
-                              decoration: InputDecoration(
-                                hintText: 'Buscar nombre o etiqueta...',
-                                hintStyle: const TextStyle(color: Colors.white54),
-                                prefixIcon: const Icon(Icons.search, color: Colors.white54, size: 20),
-                                suffixIcon: _searchQuery.isNotEmpty
-                                    ? IconButton(
-                                        icon: const Icon(Icons.cancel, color: Colors.white54, size: 16),
-                                        onPressed: () {
-                                          _searchController.clear();
-                                          setState(() {
-                                            _searchQuery = '';
-                                            _applySearchFilter();
-                                          });
-                                        },
-                                      )
-                                    : null,
-                                border: InputBorder.none,
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                color:
+                                    const Color(0xFF252525).withOpacity(0.65),
+                                border: Border.all(
+                                    color: Colors.white12, width: 0.5),
+                                boxShadow: [
+                                  BoxShadow(
+                                      color: Colors.black.withOpacity(0.2),
+                                      blurRadius: 10,
+                                      offset: const Offset(0, 4))
+                                ]),
+                            child: CallbackShortcuts(
+                              bindings: {
+                                const SingleActivator(
+                                    LogicalKeyboardKey.escape): () {
+                                  // Cuando se presiona Esc, limpiamos, ocultamos y quitamos el foco
+                                  setState(() {
+                                    _isSearchVisible = false;
+                                    _searchQuery = '';
+                                    _searchController.clear();
+                                    _applySearchFilter();
+                                  });
+                                  FocusScope.of(context).unfocus();
+                                }
+                              },
+                              child: TextField(
+                                controller: _searchController,
+                                focusNode: _searchFocusNode,
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 14),
+                                onChanged: (value) {
+                                  setState(() {
+                                    _searchQuery = value;
+                                    _applySearchFilter();
+                                  });
+                                },
+                                decoration: InputDecoration(
+                                  hintText: 'Buscar nombre o etiqueta...',
+                                  hintStyle:
+                                      const TextStyle(color: Colors.white54),
+                                  prefixIcon: const Icon(Icons.search,
+                                      color: Colors.white54, size: 20),
+                                  suffixIcon: _searchQuery.isNotEmpty
+                                      ? IconButton(
+                                          icon: const Icon(Icons.cancel,
+                                              color: Colors.white54, size: 16),
+                                          onPressed: () {
+                                            _searchController.clear();
+                                            setState(() {
+                                              _searchQuery = '';
+                                              _applySearchFilter();
+                                            });
+                                          },
+                                        )
+                                      : null,
+                                  border: InputBorder.none,
+                                  contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 16, vertical: 14),
+                                ),
                               ),
                             ),
                           ),
@@ -2178,23 +2551,34 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
         return Shortcuts(
           shortcuts: <ShortcutActivator, Intent>{
-            const SingleActivator(LogicalKeyboardKey.arrowUp): const GridUpIntent(),
-            const SingleActivator(LogicalKeyboardKey.arrowDown): const GridDownIntent(),
-            const SingleActivator(LogicalKeyboardKey.arrowLeft): const GridLeftIntent(),
-            const SingleActivator(LogicalKeyboardKey.arrowRight): const GridRightIntent(),
-            const SingleActivator(LogicalKeyboardKey.enter): const GridEnterIntent(),
-            const SingleActivator(LogicalKeyboardKey.numpadEnter): const GridEnterIntent(),
+            const SingleActivator(LogicalKeyboardKey.arrowUp):
+                const GridUpIntent(),
+            const SingleActivator(LogicalKeyboardKey.arrowDown):
+                const GridDownIntent(),
+            const SingleActivator(LogicalKeyboardKey.arrowLeft):
+                const GridLeftIntent(),
+            const SingleActivator(LogicalKeyboardKey.arrowRight):
+                const GridRightIntent(),
+            const SingleActivator(LogicalKeyboardKey.enter):
+                const GridEnterIntent(),
+            const SingleActivator(LogicalKeyboardKey.numpadEnter):
+                const GridEnterIntent(),
           },
           child: Actions(
             actions: <Type, Action<Intent>>{
               // Las flechas Izquierda/Derecha mueven de 1 en 1
-              GridLeftIntent: CallbackAction<GridLeftIntent>(onInvoke: (i) => _navegarGrid(-1)),
-              GridRightIntent: CallbackAction<GridRightIntent>(onInvoke: (i) => _navegarGrid(1)),
+              GridLeftIntent: CallbackAction<GridLeftIntent>(
+                  onInvoke: (i) => _navegarGrid(-1)),
+              GridRightIntent: CallbackAction<GridRightIntent>(
+                  onInvoke: (i) => _navegarGrid(1)),
               // Las flechas Arriba/Abajo saltan una fila entera (suman/restan las columnas)
-              GridUpIntent: CallbackAction<GridUpIntent>(onInvoke: (i) => _navegarGrid(-columns)),
-              GridDownIntent: CallbackAction<GridDownIntent>(onInvoke: (i) => _navegarGrid(columns)),
+              GridUpIntent: CallbackAction<GridUpIntent>(
+                  onInvoke: (i) => _navegarGrid(-columns)),
+              GridDownIntent: CallbackAction<GridDownIntent>(
+                  onInvoke: (i) => _navegarGrid(columns)),
               // Enter abre el archivo
-              GridEnterIntent: CallbackAction<GridEnterIntent>(onInvoke: (i) => _abrirSeleccionado()),
+              GridEnterIntent: CallbackAction<GridEnterIntent>(
+                  onInvoke: (i) => _abrirSeleccionado()),
             },
             child: Focus(
               autofocus: true,
@@ -2204,10 +2588,14 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                 child: TweenAnimationBuilder<double>(
                   tween: Tween<double>(
                     begin: 8.0, // Valor inicial por defecto
-                    end: _isSearchVisible ? 70.0 : 8.0, // Hacia dónde debe animarse
+                    end: _isSearchVisible
+                        ? 70.0
+                        : 8.0, // Hacia dónde debe animarse
                   ),
-                  duration: const Duration(milliseconds: 200), // La misma duración que la barra
-                  curve: Curves.easeInOut, // Animación suave al inicio y al final
+                  duration: const Duration(
+                      milliseconds: 200), // La misma duración que la barra
+                  curve:
+                      Curves.easeInOut, // Animación suave al inicio y al final
                   builder: (context, animatedTopPadding, child) {
                     return GridView.builder(
                       key: _gridDetectorKey,
@@ -2229,8 +2617,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                         final entity = _filteredVaultContents[index];
                         _itemKeys.putIfAbsent(entity.path, () => GlobalKey());
                         return KeyedSubtree(
-                          key: _itemKeys[entity.path],
-                          child: _buildDraggableItem(entity, index),
+                          key: ValueKey(
+                              '${entity.path}_${_showRatingsOnThumbnail}_${_showTagsCountOnThumbnail}'),
+                          child: Container(
+                            key: _itemKeys[entity.path],
+                            child: _buildDraggableItem(entity, index),
+                          ),
                         );
                       },
                     );
@@ -2270,19 +2662,20 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   Widget _buildDragFeedback(List<FileSystemEntity> items) {
     final firstItem = items.first;
-    
+
     // 1. Determinamos qué mostrar en la vista previa del arrastre
     Widget previewWidget;
     if (firstItem is File) {
       final ext = p.extension(firstItem.path).toLowerCase();
       final isVideo = ['.mp4', '.mov', '.avi', '.mkv'].contains(ext);
-      
+
       if (isVideo) {
         // Si es video, mostramos un ícono representativo
         previewWidget = Container(
           color: Colors.grey.shade900,
           child: const Center(
-            child: Icon(Icons.movie_creation_outlined, size: 50, color: Colors.white70),
+            child: Icon(Icons.movie_creation_outlined,
+                size: 50, color: Colors.white70),
           ),
         );
       } else {
@@ -2350,20 +2743,24 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               color: isHovered
                   ? Colors.white.withOpacity(0.1)
                   : isSelected
-                      ? const Color(0xFF0A84FF).withOpacity(0.2) // Azul translúcido
-                      : Colors.white.withOpacity(0.04), 
+                      ? const Color(0xFF0A84FF)
+                          .withOpacity(0.2) // Azul translúcido
+                      : Colors.white.withOpacity(0.04),
               borderRadius: BorderRadius.circular(8.0),
               border: Border.all(
                 color: isHovered || isSelected
                     ? const Color(0xFF0A84FF) // Azul macOS
                     : Colors.transparent,
-                width: isSelected ? 2.5 : 1.5, // Ligeramente más grueso al seleccionar
+                width: isSelected
+                    ? 2.5
+                    : 1.5, // Ligeramente más grueso al seleccionar
               ),
             ),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.folder, size: _thumbnailExtent * 0.4, color: Colors.amber),
+                Icon(Icons.folder,
+                    size: _thumbnailExtent * 0.4, color: Colors.amber),
                 const SizedBox(height: 8),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 4.0),
@@ -2396,7 +2793,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         }
         setState(() => _selectedItems.clear());
         await _loadVaultContents(quiet: true);
-    },
+      },
     );
   }
 
@@ -2409,11 +2806,13 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     // Simplemente devolvemos nuestro nuevo widget y le pasamos los datos necesarios
     return ImageItemWidget(
       imageFile: imageFile,
-      imageId: imageId, // <-- AQUÍ ESTÁ EL PARÁMETRO QUE FALTABA
+      imageId: imageId,
       isSelected: isSelected,
       extent: _thumbnailExtent,
       metadataService: _metadataService,
       thumbnailService: _thumbnailService,
+      showRatings: _showRatingsOnThumbnail,
+      showTagsCount: _showTagsCountOnThumbnail,
       onTap: () => _handleItemTap(imageFile, index),
       onSecondaryTapUp: (details) {
         _hideContextMenu();
@@ -2429,8 +2828,9 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _hideContextMenu();
     if (_selectedItems.isEmpty) return;
     final count = _selectedItems.length;
-    final itemText =
-        count == 1 ? 'el elemento seleccionado' : 'los $count elementos seleccionados';
+    final itemText = count == 1
+        ? 'el elemento seleccionado'
+        : 'los $count elementos seleccionados';
     bool confirm = await _showConfirmationDialog(
           title: 'Confirmar Eliminación',
           content:
@@ -2444,7 +2844,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
     for (final entity in _selectedItems) {
       if (entity.existsSync()) {
-        
         // NUEVO: Borramos su rastro en la base de datos
         final idToDelete = p.relative(entity.path, from: _vaultRootDir.path);
         await _metadataService.deleteMetadata(idToDelete);
@@ -2457,7 +2856,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         }
       }
     }
-    
+
     setState(() {
       _selectedItems.clear();
     });
@@ -2482,21 +2881,22 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       if (entity is File) {
         // 2. Le quitamos el cifrado al nombre (Ej: foto0nq4.vtx -> foto.mp4)
         final cleanName = _getDeobfuscatedName(p.basename(entity.path));
-        
+
         // 3. Nos aseguramos de no sobrescribir nada si ya existe un archivo igual
         final newPath = await _getUniquePath(exportRootDir, cleanName);
         await entity.copy(newPath);
       } else if (entity is Directory) {
         // Si es una carpeta, delegamos la copia a la función recursiva
-        final newDirPath = await _getUniquePath(exportRootDir, p.basename(entity.path));
+        final newDirPath =
+            await _getUniquePath(exportRootDir, p.basename(entity.path));
         await _copyDirectory(entity, Directory(newDirPath));
       }
     }
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content:
-              Text('${_selectedItems.length} elemento(s) exportado(s) con éxito a ${exportRootDir.path}.')));
+          content: Text(
+              '${_selectedItems.length} elemento(s) exportado(s) con éxito a ${exportRootDir.path}.')));
     }
     setState(() => _selectedItems.clear());
   }
@@ -2510,7 +2910,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     if (selectedDirectory == null) return;
 
     final exportRootDir = Directory(selectedDirectory);
-    
+
     // Usamos las funciones de descifrado que ya tienes para limpiar el nombre
     final cleanName = _getDeobfuscatedName(p.basename(file.path));
     final newPath = await _getUniquePath(exportRootDir, cleanName);
@@ -2519,12 +2919,13 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       await file.copy(newPath);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Archivo exportado con éxito a ${exportRootDir.path}.')));
+            content:
+                Text('Archivo exportado con éxito a ${exportRootDir.path}.')));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Error al exportar: $e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Error al exportar: $e')));
       }
     }
   }
@@ -2546,27 +2947,30 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     if (selectedDirectory == null) return;
     final destinationDir = Directory(selectedDirectory);
     if (onStart != null) onStart();
-    
+
     setState(() => _isLoading = true);
-    
+
     await _watcherSubscription?.cancel();
     _watcherSubscription = null;
 
     // Ejecuta la función recursiva que ya tiene la lógica de limpiar nombres
     await _restoreDirectoryContents(_vaultRootDir, destinationDir);
-    
+
     await _clearVortexPathSetting();
     await _loadVaultContents();
-    
+
     setState(() => _isLoading = false);
-     if (mounted) {
+    if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Todos los archivos han sido restaurados exitosamente.')),
+        const SnackBar(
+            content:
+                Text('Todos los archivos han sido restaurados exitosamente.')),
       );
     }
   }
 
-  Future<void> _restoreDirectoryContents(Directory source, Directory destination) async {
+  Future<void> _restoreDirectoryContents(
+      Directory source, Directory destination) async {
     final List<FileSystemEntity> contents = await source.list().toList();
 
     for (final entity in contents) {
@@ -2577,17 +2981,18 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           // NUEVO: Desciframos el nombre aquí también para los archivos internos
           final cleanName = _getDeobfuscatedName(p.basename(entity.path));
           final newPath = await _getUniquePath(destination, cleanName);
-          
+
           await _metadataService.deleteMetadata(idToDelete);
-          await _thumbnailService.clearThumbnail(p.basename(entity.path)); 
+          await _thumbnailService.clearThumbnail(p.basename(entity.path));
           await _moveFileRobustly(entity, newPath);
         } else if (entity is Directory) {
-          final newDestDir = Directory(await _getUniquePath(destination, p.basename(entity.path)));
+          final newDestDir = Directory(
+              await _getUniquePath(destination, p.basename(entity.path)));
           await newDestDir.create();
-          
+
           await _restoreDirectoryContents(entity, newDestDir);
           await _metadataService.deleteMetadata(idToDelete);
-          
+
           await entity.delete(recursive: true);
         }
       } catch (e) {
@@ -2595,7 +3000,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       }
     }
   }
-
 
   Future<void> _handleRestoreSelected() async {
     _hideContextMenu();
@@ -2610,12 +3014,16 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     final destinationDir = Directory(selectedDirectory);
 
     final count = _selectedItems.length;
-    final itemText = count == 1 ? 'el elemento seleccionado' : 'los $count elementos seleccionados';
+    final itemText = count == 1
+        ? 'el elemento seleccionado'
+        : 'los $count elementos seleccionados';
     bool confirm = await _showConfirmationDialog(
           title: 'Confirmar Restauración',
-          content: '¿Deseas mover $itemText a la carpeta seleccionada y quitarlos de la bóveda?',
-        ) ?? false;
-        
+          content:
+              '¿Deseas mover $itemText a la carpeta seleccionada y quitarlos de la bóveda?',
+        ) ??
+        false;
+
     if (!confirm) {
       setState(() => _selectedItems.clear());
       return;
@@ -2628,14 +3036,15 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         // NUEVO: Desciframos el nombre para recuperar la extensión original (.mp4, .jpg, etc.)
         final cleanName = _getDeobfuscatedName(p.basename(entity.path));
         final newPath = await _getUniquePath(destinationDir, cleanName);
-        
+
         await _metadataService.deleteMetadata(idToDelete);
         await _thumbnailService.clearThumbnail(p.basename(entity.path));
         await _moveFileRobustly(entity, newPath);
       } else if (entity is Directory) {
-        final newDestDir = Directory(await _getUniquePath(destinationDir, p.basename(entity.path)));
+        final newDestDir = Directory(
+            await _getUniquePath(destinationDir, p.basename(entity.path)));
         await newDestDir.create();
-        
+
         await _restoreDirectoryContents(entity, newDestDir);
         await _metadataService.deleteMetadata(idToDelete);
         await entity.delete(recursive: true);
@@ -2644,10 +3053,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$count elemento(s) restaurado(s) con éxito a ${destinationDir.path}.')),
+        SnackBar(
+            content: Text(
+                '$count elemento(s) restaurado(s) con éxito a ${destinationDir.path}.')),
       );
     }
-    
+
     setState(() {
       _selectedItems.clear();
     });
@@ -2669,13 +3080,15 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       }
     }
   }
-  void _openSettings() {
-    Navigator.push(
+
+  void _openSettings() async {
+    await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => SettingsScreen(
           metadataService: _metadataService, // <--- PASAR SERVICIO
-          onRestoreAll: (_vortexPath != null && widget.currentDirectory == null) 
+          onChanged: _refreshUIPreferences,
+          onRestoreAll: (_vortexPath != null && widget.currentDirectory == null)
               ? () => _restoreAllAndClear(
                     onStart: () {
                       if (Navigator.canPop(context)) Navigator.pop(context);
@@ -2683,6 +3096,225 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                   )
               : null,
         ),
+      ),
+    );
+    //_syncPreferences();
+    _refreshUIPreferences();
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _showRatingsOnThumbnail = prefs.getBool(_showRatingsKey) ?? true;
+      _showTagsCountOnThumbnail = prefs.getBool(_showTagsKey) ?? true;
+    });
+  }
+
+  Future<void> _showPropertiesDialog(FileSystemEntity entity) async {
+    final isFile = entity is File;
+    String name = p.basename(entity.path);
+    String type = isFile ? 'Archivo' : 'Carpeta';
+    String sizeStr = '--';
+    String dateStr = 'Desconocido';
+    
+    String addedDateStr = '--';
+    int rating = 0;
+    List<String> tags = [];
+
+    try {
+      // 1. Extraemos datos del sistema operativo
+      final stat = await entity.stat();
+      dateStr = "${stat.modified.day.toString().padLeft(2, '0')}/${stat.modified.month.toString().padLeft(2, '0')}/${stat.modified.year} ${stat.modified.hour.toString().padLeft(2, '0')}:${stat.modified.minute.toString().padLeft(2, '0')}";
+      
+      if (isFile) {
+        // Limpiamos el nombre usando tus utilidades existentes
+        name = _getDeobfuscatedName(name);
+        final realExt = _getRealExtension(entity.path).replaceAll('.', '').toUpperCase();
+        type = _isVideo(entity.path) ? '$realExt (Video)' : '$realExt (Imagen)';
+        
+        // Calculamos el peso
+        int bytes = stat.size;
+        if (bytes < 1024) sizeStr = '$bytes B';
+        else if (bytes < 1024 * 1024) sizeStr = '${(bytes / 1024).toStringAsFixed(2)} KB';
+        else if (bytes < 1024 * 1024 * 1024) sizeStr = '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+        else sizeStr = '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+
+        // 2. Extraemos datos de tu base de datos SQLite (Vórtice)
+        final imageId = p.relative(entity.path, from: _vaultRootDir.path);
+        final metadata = _metadataService.getMetadataForImage(imageId);
+        rating = metadata.rating;
+        tags = metadata.tags;
+        
+        if (metadata.addedTimestamp > 0) {
+          final addedDate = DateTime.fromMillisecondsSinceEpoch(metadata.addedTimestamp);
+          addedDateStr = "${addedDate.day.toString().padLeft(2, '0')}/${addedDate.month.toString().padLeft(2, '0')}/${addedDate.year} ${addedDate.hour.toString().padLeft(2, '0')}:${addedDate.minute.toString().padLeft(2, '0')}";
+        } else {
+           // Fallback por si era una imagen vieja sin timestamp
+           addedDateStr = dateStr;
+        }
+      }
+    } catch(e) {
+      debugPrint("Error leyendo propiedades: $e");
+    }
+
+    // 3. Dibujamos el Dialog con diseño macOS, Scroll y expansor de etiquetas
+    if (mounted) {
+      showDialog(
+        context: context,
+        barrierColor: Colors.black.withOpacity(0.4),
+        builder: (context) {
+          bool isTagsExpanded = false; // Estado local para este diálogo
+
+          return StatefulBuilder(
+            builder: (context, setState) {
+              return Dialog(
+                backgroundColor: Colors.transparent,
+                elevation: 0,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(14.0),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                    child: Container(
+                      width: 350,
+                      // Limitamos la altura al 80% de la pantalla para forzar el scroll si es necesario
+                      constraints: BoxConstraints(
+                        maxHeight: MediaQuery.of(context).size.height * 0.8,
+                      ),
+                      padding: const EdgeInsets.all(24),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF252525).withOpacity(0.65),
+                        border: Border.all(color: Colors.white12, width: 0.5),
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Center(
+                            child: Text('Propiedades', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white))
+                          ),
+                          const SizedBox(height: 20),
+                          
+                          // Flexible + SingleChildScrollView habilitan el scroll interno
+                          Flexible(
+                            child: SingleChildScrollView(
+                              physics: const BouncingScrollPhysics(), // Scroll suave estilo Mac
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  _buildPropertyRow('Nombre:', name),
+                                  _buildPropertyRow('Tipo:', type),
+                                  if (isFile) _buildPropertyRow('Tamaño:', sizeStr),
+                                  _buildPropertyRow('Modificado:', dateStr),
+                                  
+                                  if (isFile) ...[
+                                    const Divider(color: Colors.white12, height: 24, thickness: 1),
+                                    const Text('Metadatos del Vórtice', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF0A84FF), fontSize: 13)),
+                                    const SizedBox(height: 12),
+                                    _buildPropertyRow('Añadido:', addedDateStr),
+                                    _buildPropertyRow('Estrellas:', rating > 0 ? '$rating' : 'Sin calificar'),
+                                    
+                                    // Nuevo row inteligente para las etiquetas
+                                    _buildTagsPropertyRow('Etiquetas:', tags, isTagsExpanded, () {
+                                      setState(() {
+                                        isTagsExpanded = !isTagsExpanded;
+                                      });
+                                    }),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ),
+                          
+                          const SizedBox(height: 24),
+                          Center(
+                            child: TextButton(
+                              onPressed: () => Navigator.of(context).pop(),
+                              style: TextButton.styleFrom(foregroundColor: const Color(0xFF0A84FF)),
+                              child: const Text('Aceptar', style: TextStyle(fontWeight: FontWeight.w600)),
+                            ),
+                          )
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            }
+          );
+        },
+      );
+    }
+  }
+
+  // Widget auxiliar estándar
+  Widget _buildPropertyRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 85, 
+            child: Text(label, style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.white54, fontSize: 13))
+          ),
+          Expanded(
+            child: Text(value, style: const TextStyle(color: Colors.white, fontSize: 13))
+          ),
+        ],
+      ),
+    );
+  }
+
+  // NUEVO: Widget auxiliar específico para etiquetas expansibles
+  Widget _buildTagsPropertyRow(String label, List<String> tags, bool isExpanded, VoidCallback onToggle) {
+    if (tags.isEmpty) {
+      return _buildPropertyRow(label, 'Ninguna');
+    }
+
+    final displayTags = isExpanded ? tags : tags.take(3).toList();
+    final hiddenCount = tags.length - 3;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 85,
+            child: Text(label, style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.white54, fontSize: 13))
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(displayTags.join(', '), style: const TextStyle(color: Colors.white, fontSize: 13)),
+                
+                // Botón "Ver más"
+                if (!isExpanded && hiddenCount > 0)
+                  InkWell(
+                    onTap: onToggle,
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 4.0),
+                      child: Text(
+                        'Ver $hiddenCount más...',
+                        style: const TextStyle(color: Color(0xFF0A84FF), fontSize: 12, fontWeight: FontWeight.w500),
+                      ),
+                    ),
+                  ),
+                
+                // Botón "Ocultar"
+                if (isExpanded && tags.length > 3)
+                  InkWell(
+                    onTap: onToggle,
+                    child: const Padding(
+                      padding: const EdgeInsets.only(top: 4.0),
+                      child: Text(
+                        'Ocultar',
+                        style: TextStyle(color: Color(0xFF0A84FF), fontSize: 12, fontWeight: FontWeight.w500),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -2729,6 +3361,8 @@ class ImageItemWidget extends StatefulWidget {
   final GestureTapUpCallback onSecondaryTapUp;
   final MetadataService metadataService;
   final ThumbnailService thumbnailService;
+  final bool showRatings;
+  final bool showTagsCount;
 
   const ImageItemWidget({
     super.key,
@@ -2740,6 +3374,8 @@ class ImageItemWidget extends StatefulWidget {
     required this.onSecondaryTapUp,
     required this.metadataService,
     required this.thumbnailService,
+    this.showRatings = true,
+    this.showTagsCount = true,
   });
 
   @override
@@ -2748,7 +3384,7 @@ class ImageItemWidget extends StatefulWidget {
 
 class _ImageItemWidgetState extends State<ImageItemWidget> {
   File? _thumbFile; // Guardará el resultado de la carga
-  
+
   @override
   void initState() {
     super.initState();
@@ -2771,7 +3407,8 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
   Future<void> _loadThumbnail() async {
     // Obtenemos la miniatura y actualizamos el estado de ESTE widget
     final thumb = await widget.thumbnailService.getThumbnail(widget.imageFile);
-    if (mounted) { // Nos aseguramos que el widget todavía existe
+    if (mounted) {
+      // Nos aseguramos que el widget todavía existe
       setState(() {
         _thumbFile = thumb;
       });
@@ -2780,9 +3417,13 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
 
   @override
   Widget build(BuildContext context) {
-    final rating = widget.metadataService.getMetadataForImage(widget.imageId).rating;
-    
-    // 1. AHORA SÍ usamos la función que descifra el .vtx para saber si es video
+    // 1. Obtenemos toda la metadata de una vez para extraer tanto el rating como las etiquetas
+    final metadata = widget.metadataService.getMetadataForImage(widget.imageId);
+    final rating = metadata.rating;
+    final tagsCount =
+        metadata.tags.length; // <-- Extraemos la cantidad de etiquetas
+
+    // Usamos la función que descifra el .vtx para saber si es video
     final bool isVideo = _isVideo(widget.imageFile.path);
 
     return GestureDetector(
@@ -2791,15 +3432,17 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
       child: Hero(
         tag: widget.imageFile.path,
         placeholderBuilder: (context, heroSize, child) {
-          // Esto obliga a la cuadrícula a seguir mostrando la miniatura 
+          // Esto obliga a la cuadrícula a seguir mostrando la miniatura
           // intacta, eliminando el parpadeo negro por completo.
-          return child; 
+          return child;
         },
         child: Container(
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(8.0),
             border: Border.all(
-              color: widget.isSelected ? const Color(0xFF0A84FF) : Colors.transparent,
+              color: widget.isSelected
+                  ? const Color(0xFF0A84FF)
+                  : Colors.transparent,
               width: 2.5, // Borde de selección limpio
             ),
             // Sombra sutil para dar relieve a las imágenes
@@ -2834,20 +3477,23 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
                           return Container(
                             color: Colors.grey.shade900,
                             child: const Center(
-                              child: Icon(Icons.broken_image, color: Colors.white54, size: 40),
+                              child: Icon(Icons.broken_image,
+                                  color: Colors.white54, size: 40),
                             ),
                           );
                         },
                         gaplessPlayback: true,
                       ),
-                      
+
                       // 2. CAPA DEL BOTÓN DE PLAY (Solo si es video)
                       if (isVideo) ...[
-                        Container(color: Colors.black26), // Oscurece un poco la miniatura
+                        Container(
+                            color: Colors
+                                .black26), // Oscurece un poco la miniatura
                         const Center(
                           child: Icon(
                             Icons.play_circle_fill,
-                            color: Colors.white, 
+                            color: Colors.white,
                             size: 48,
                           ),
                         ),
@@ -2872,15 +3518,48 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
                           ),
                         ),
                       ),
-                      
-                      // 4. Estrellas
-                      if (rating > 0)
+
+                      // 4. Estrellas (Lado derecho)
+                      if (widget.showRatings && rating > 0)
                         Positioned(
                           bottom: 4,
                           right: 4,
                           child: RatingStarsDisplay(
                             rating: rating,
                             iconSize: widget.extent / 10,
+                          ),
+                        ),
+
+                      // 5. NUEVO: Contador de Etiquetas (Lado izquierdo)
+                      if (widget.showTagsCount && tagsCount > 0)
+                        Positioned(
+                          bottom: 4,
+                          left: 4,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 5.0, vertical: 2.0),
+                            decoration: BoxDecoration(
+                              color: Colors.black
+                                  .withOpacity(0.6), // Fondo oscuro sutil
+                              borderRadius: BorderRadius.circular(4.0),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.label_outline,
+                                    size: widget.extent / 12,
+                                    color: Colors.white70),
+                                const SizedBox(width: 3),
+                                Text(
+                                  '$tagsCount',
+                                  style: TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: widget.extent / 12,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                     ],
@@ -2919,7 +3598,8 @@ class FullScreenImageViewer extends StatefulWidget {
 class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
   late PageController _pageController;
   late int _currentIndex;
-  final GlobalKey _ratingButtonKey = GlobalKey(); // Para saber dónde dibujar el menú
+  final GlobalKey _ratingButtonKey =
+      GlobalKey(); // Para saber dónde dibujar el menú
   OverlayEntry? _ratingOverlay; // Para guardar el menú flotante
 
   String _getCleanName(String path) {
@@ -2955,14 +3635,16 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
     super.dispose();
   }
 
-  void _showFullScreenRatingMenu(BuildContext context, String imageId, int currentRating) {
+  void _showFullScreenRatingMenu(
+      BuildContext context, String imageId, int currentRating) {
     if (_ratingOverlay != null) return;
-    
+
     // Encontramos la posición exacta del botón en la barra superior
-    final RenderBox? button = _ratingButtonKey.currentContext?.findRenderObject() as RenderBox?;
+    final RenderBox? button =
+        _ratingButtonKey.currentContext?.findRenderObject() as RenderBox?;
     if (button == null) return;
     final position = button.localToGlobal(Offset.zero);
-    
+
     final items = List.generate(6, (index) {
       final isSelected = index == currentRating;
       return InkWell(
@@ -2976,10 +3658,12 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
           padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
           child: Row(
             children: [
-              Icon(isSelected ? Icons.check : null, size: 18, color: Colors.white),
+              Icon(isSelected ? Icons.check : null,
+                  size: 18, color: Colors.white),
               const SizedBox(width: 12),
               if (index == 0)
-                const Text("Sin calificar", style: TextStyle(color: Colors.white))
+                const Text("Sin calificar",
+                    style: TextStyle(color: Colors.white))
               else
                 RatingStarsDisplay(rating: index, iconSize: 20),
             ],
@@ -3003,8 +3687,10 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
             ),
             Positioned(
               // Posicionado justo debajo del botón
-              top: position.dy + button.size.height + 8, 
-              right: MediaQuery.of(context).size.width - position.dx - button.size.width,
+              top: position.dy + button.size.height + 8,
+              right: MediaQuery.of(context).size.width -
+                  position.dx -
+                  button.size.width,
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(8.0),
                 child: BackdropFilter(
@@ -3057,14 +3743,18 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
     final currentFile = widget.imageFiles[_currentIndex];
     // Calculamos el ID relativo para poder consultar la base de datos
     final imageId = p.relative(currentFile.path, from: widget.vaultRootPath);
-    final currentRating = widget.metadataService.getMetadataForImage(imageId).rating;
+    final currentRating =
+        widget.metadataService.getMetadataForImage(imageId).rating;
 
     // --- ENVOLVEMOS EL WIDGET PARA ESCUCHAR EL TECLADO ---
     return Shortcuts(
       shortcuts: <ShortcutActivator, Intent>{
-        const SingleActivator(LogicalKeyboardKey.arrowRight): const SiguienteImagenIntent(),
-        const SingleActivator(LogicalKeyboardKey.arrowLeft): const AnteriorImagenIntent(),
-        const SingleActivator(LogicalKeyboardKey.escape): const CloseViewerIntent(),
+        const SingleActivator(LogicalKeyboardKey.arrowRight):
+            const SiguienteImagenIntent(),
+        const SingleActivator(LogicalKeyboardKey.arrowLeft):
+            const AnteriorImagenIntent(),
+        const SingleActivator(LogicalKeyboardKey.escape):
+            const CloseViewerIntent(),
       },
       child: Actions(
         actions: <Type, Action<Intent>>{
@@ -3106,23 +3796,26 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                         imageIds: [imageId],
                         metadataService: widget.metadataService,
                       ),
-                    ).then((_) => setState(() {})); // Refresca la vista si cambian las etiquetas
+                    ).then((_) => setState(
+                        () {})); // Refresca la vista si cambian las etiquetas
                   },
                 ),
-                
+
                 // 2. Menú de Calificación (Estrellas)
                 IconButton(
                   key: _ratingButtonKey,
-                  icon: currentRating > 0 
+                  icon: currentRating > 0
                       ? const Icon(Icons.star, color: Colors.amber)
                       : const Icon(Icons.star_outline, color: Colors.white),
                   tooltip: 'Calificación',
-                  onPressed: () => _showFullScreenRatingMenu(context, imageId, currentRating),
+                  onPressed: () => _showFullScreenRatingMenu(
+                      context, imageId, currentRating),
                 ),
 
                 // 3. Botón de Exportar
                 IconButton(
-                  icon: const Icon(Icons.download_for_offline_outlined, color: Colors.white),
+                  icon: const Icon(Icons.download_for_offline_outlined,
+                      color: Colors.white),
                   tooltip: 'Exportar',
                   onPressed: _exportCurrentImage,
                 ),
@@ -3145,14 +3838,16 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                   itemBuilder: (context, index) {
                     final imageFile = widget.imageFiles[index];
                     final bool isCurrentPage = index == _currentIndex;
-                    
+
                     final bool isVideo = _isVideo(imageFile.path);
                     if (isVideo) {
                       // Retornamos el video SIN Hero para evitar el congelamiento
                       return CustomVideoPlayer(videoFile: imageFile);
                     }
                     return Hero(
-                      tag: isCurrentPage ? imageFile.path : '${imageFile.path}_disabled',
+                      tag: isCurrentPage
+                          ? imageFile.path
+                          : '${imageFile.path}_disabled',
                       child: InteractiveViewer(
                         panEnabled: false,
                         minScale: 1.0,
@@ -3189,8 +3884,8 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                         shape: BoxShape.circle,
                       ),
                       child: IconButton(
-                        icon:
-                            const Icon(Icons.arrow_forward_ios, color: Colors.white),
+                        icon: const Icon(Icons.arrow_forward_ios,
+                            color: Colors.white),
                         onPressed: _irASiguiente, // Usamos la función nueva
                       ),
                     ),
@@ -3239,16 +3934,19 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
   }
 
   @override
-  void onWindowClose() async { // <-- Convertir a async
+  void onWindowClose() async {
+    // <-- Convertir a async
     // --- LÓGICA MODIFICADA ---
     final prefs = await SharedPreferences.getInstance();
-    final closeAction = prefs.getString(_closeActionKey) ?? CloseAction.minimize.name;
-    
+    final closeAction =
+        prefs.getString(_closeActionKey) ?? CloseAction.minimize.name;
+
     if (closeAction == CloseAction.exit.name) {
       windowManager.destroy(); // Cierra la app
     } else {
       windowManager.hide(); // Minimiza a la bandeja
-      widget.setAuthenticated(true); // Mantiene el comportamiento original de saltar el auth si se minimiza
+      widget.setAuthenticated(
+          true); // Mantiene el comportamiento original de saltar el auth si se minimiza
     }
     // --- FIN DE LA MODIFICACIÓN ---
   }
@@ -3276,7 +3974,8 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
   void _onPinSubmitted() async {
     final enteredPin = _pinController.text;
 
-    if (_currentState == _AuthState.setup && (enteredPin.length < 4 || enteredPin.length > 8)) {
+    if (_currentState == _AuthState.setup &&
+        (enteredPin.length < 4 || enteredPin.length > 8)) {
       setState(() => _errorMessage = 'El PIN debe tener entre 4 y 8 dígitos.');
       return;
     }
@@ -3331,7 +4030,7 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
         return 'Ingresa tu PIN';
     }
   }
-  
+
   Widget _buildPinInputArea() {
     return SizedBox(
       width: (_pinLength * 57).toDouble(),
@@ -3370,7 +4069,8 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
-    bool useBoxesUI = _currentState == _AuthState.login || _currentState == _AuthState.setupConfirm;
+    bool useBoxesUI = _currentState == _AuthState.login ||
+        _currentState == _AuthState.setupConfirm;
 
     return Scaffold(
       body: Center(
@@ -3381,10 +4081,14 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
             children: [
               const Icon(Icons.security, size: 60),
               const SizedBox(height: 20),
-              Text(_getTitle(), style: Theme.of(context).textTheme.headlineSmall),
+              Text(_getTitle(),
+                  style: Theme.of(context).textTheme.headlineSmall),
               const SizedBox(height: 20),
-
-              if (useBoxesUI)
+              if (_currentState == _AuthState.checking)
+                const SizedBox(
+                    height:
+                        55) // Mantiene el espacio visual vacío mientras carga
+              else if (useBoxesUI)
                 _buildPinInputArea()
               else
                 SizedBox(
@@ -3397,21 +4101,19 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
                     textAlign: TextAlign.center,
                     maxLength: 8,
                     autofocus: true,
-                    decoration: InputDecoration(
+                    decoration: const InputDecoration(
                       labelText: 'PIN (4-8 dígitos)',
-                      border: const OutlineInputBorder(),
+                      border: OutlineInputBorder(),
                     ),
                     onSubmitted: (_) => _onPinSubmitted(),
                   ),
                 ),
-              
               const SizedBox(height: 16),
               if (_errorMessage != null)
                 Text(
                   _errorMessage!,
                   style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
-
               if (_currentState == _AuthState.setup) ...[
                 const SizedBox(height: 24),
                 ElevatedButton(
@@ -3430,8 +4132,10 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
 class SettingsScreen extends StatefulWidget {
   final VoidCallback? onRestoreAll;
   final MetadataService? metadataService;
+  final VoidCallback? onChanged;
 
-  const SettingsScreen({super.key, this.onRestoreAll, this.metadataService});
+  const SettingsScreen(
+      {super.key, this.onRestoreAll, this.metadataService, this.onChanged});
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -3449,9 +4153,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadSettings();
   }
 
+  bool _showRatings = true;
+  bool _showTags = true;
+
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
-    final closeActionName = prefs.getString(_closeActionKey) ?? CloseAction.minimize.name;
+    final closeActionName =
+        prefs.getString(_closeActionKey) ?? CloseAction.minimize.name;
     final startup = await launchAtStartup.isEnabled();
     final showNotif = prefs.getBool(_showNotificationsKey) ?? true;
 
@@ -3463,9 +4171,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
         _startup = startup;
         _showNotifications = showNotif;
+        _showRatings = prefs.getBool(_showRatingsKey) ?? true;
+        _showTags = prefs.getBool(_showTagsKey) ?? true;
         _isLoading = false;
       });
     }
+  }
+
+  Future<void> _setShowRatings(bool value) async {
+    setState(() => _showRatings = value);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_showRatingsKey, value);
+    widget.onChanged?.call();
+  }
+
+  Future<void> _setShowTags(bool value) async {
+    setState(() => _showTags = value);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_showTagsKey, value);
+    widget.onChanged?.call();
   }
 
   Future<void> _setShowNotifications(bool value) async {
@@ -3497,11 +4221,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              value 
-              ? 'Inicio automático activado.' 
-              : 'Inicio automático desactivado.'
-            ),
+            content: Text(value
+                ? 'Inicio automático activado.'
+                : 'Inicio automático desactivado.'),
             duration: const Duration(seconds: 2),
           ),
         );
@@ -3534,7 +4256,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 // TÍTULO DE SECCIÓN
                 const Padding(
                   padding: EdgeInsets.only(left: 16, bottom: 8),
-                  child: Text('COMPORTAMIENTO', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                  child: Text('COMPORTAMIENTO',
+                      style: TextStyle(color: Colors.white54, fontSize: 11)),
                 ),
                 // CAJA AGRUPADORA 1
                 Container(
@@ -3545,15 +4268,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: Column(
                     children: [
                       RadioListTile<CloseAction>(
-                        title: const Text('Minimizar a la bandeja', style: TextStyle(fontSize: 13)),
+                        title: const Text('Minimizar a la bandeja',
+                            style: TextStyle(fontSize: 13)),
                         value: CloseAction.minimize,
                         groupValue: _closeAction,
                         onChanged: _setCloseAction,
                         activeColor: const Color(0xFF0A84FF), // Azul Mac
                       ),
-                      const Divider(height: 1, indent: 16, color: Colors.white12),
+                      const Divider(
+                          height: 1, indent: 16, color: Colors.white12),
                       RadioListTile<CloseAction>(
-                        title: const Text('Cerrar la aplicación', style: TextStyle(fontSize: 13)),
+                        title: const Text('Cerrar la aplicación',
+                            style: TextStyle(fontSize: 13)),
                         value: CloseAction.exit,
                         groupValue: _closeAction,
                         onChanged: _setCloseAction,
@@ -3568,7 +4294,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 // TÍTULO DE SECCIÓN 2
                 const Padding(
                   padding: EdgeInsets.only(left: 16, bottom: 8),
-                  child: Text('SISTEMA Y NOTIFICACIONES', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                  child: Text('SISTEMA Y NOTIFICACIONES',
+                      style: TextStyle(color: Colors.white54, fontSize: 11)),
                 ),
                 // CAJA AGRUPADORA 2
                 Container(
@@ -3578,27 +4305,67 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   child: Column(
                     children: [
-                      SwitchListTile.adaptive( // Adaptive da el estilo redondeado nativo
-                        title: const Text('Iniciar con el sistema', style: TextStyle(fontSize: 13)),
+                      SwitchListTile.adaptive(
+                        // Adaptive da el estilo redondeado nativo
+                        title: const Text('Iniciar con el sistema',
+                            style: TextStyle(fontSize: 13)),
                         value: _startup,
                         onChanged: _setStartup,
-                        activeColor: const Color(0xFF32D74B), // Verde vibrante de Apple
+                        activeColor:
+                            const Color(0xFF32D74B), // Verde vibrante de Apple
                       ),
-                      const Divider(height: 1, indent: 16, color: Colors.white12),
+                      const Divider(
+                          height: 1, indent: 16, color: Colors.white12),
                       SwitchListTile.adaptive(
-                        title: const Text('Avisos en segundo plano', style: TextStyle(fontSize: 13)),
+                        title: const Text('Avisos en segundo plano',
+                            style: TextStyle(fontSize: 13)),
                         value: _showNotifications,
                         onChanged: _setShowNotifications,
-                        activeColor: const Color(0xFF32D74B), 
+                        activeColor: const Color(0xFF32D74B),
                       ),
                     ],
                   ),
                 ),
 
                 const SizedBox(height: 24),
+
                 const Padding(
                   padding: EdgeInsets.only(left: 16, bottom: 8),
-                  child: Text('CONTENIDO', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                  child: Text('VISTA DE MINIATURAS',
+                      style: TextStyle(color: Colors.white54, fontSize: 11)),
+                ),
+                Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1C1C1E),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Column(
+                    children: [
+                      SwitchListTile.adaptive(
+                        title: const Text('Mostrar calificación (estrellas)',
+                            style: TextStyle(fontSize: 13)),
+                        value: _showRatings,
+                        onChanged: _setShowRatings,
+                        activeColor: const Color(0xFF32D74B),
+                      ),
+                      const Divider(
+                          height: 1, indent: 16, color: Colors.white12),
+                      SwitchListTile.adaptive(
+                        title: const Text('Mostrar contador de etiquetas',
+                            style: TextStyle(fontSize: 13)),
+                        value: _showTags,
+                        onChanged: _setShowTags,
+                        activeColor: const Color(0xFF32D74B),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 24),
+
+                const Padding(
+                  padding: EdgeInsets.only(left: 16, bottom: 8),
+                  child: Text('CONTENIDO',
+                      style: TextStyle(color: Colors.white54, fontSize: 11)),
                 ),
                 Container(
                   decoration: BoxDecoration(
@@ -3606,15 +4373,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: ListTile(
-                    leading: const Icon(Icons.label_outline, color: Color(0xFF0A84FF)),
-                    title: const Text('Gestionar Etiquetas', style: TextStyle(fontSize: 13)),
-                    trailing: const Icon(Icons.chevron_right, size: 20, color: Colors.white24),
+                    leading: const Icon(Icons.label_outline,
+                        color: Color(0xFF0A84FF)),
+                    title: const Text('Gestionar Etiquetas',
+                        style: TextStyle(fontSize: 13)),
+                    trailing: const Icon(Icons.chevron_right,
+                        size: 20, color: Colors.white24),
                     onTap: () {
                       if (widget.metadataService != null) {
                         Navigator.push(
                           context,
                           MaterialPageRoute(
-                            builder: (context) => TagManagementScreen(metadataService: widget.metadataService!),
+                            builder: (context) => TagManagementScreen(
+                                metadataService: widget.metadataService!),
                           ),
                         );
                       }
@@ -3628,18 +4399,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 if (widget.onRestoreAll != null) ...[
                   const Padding(
                     padding: EdgeInsets.only(left: 16, bottom: 8),
-                    child: Text('RESTAURAR BÓVEDA', style: TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+                    child: Text('RESTAURAR BÓVEDA',
+                        style: TextStyle(
+                            color: Colors.redAccent,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold)),
                   ),
                   Container(
                     decoration: BoxDecoration(
                       color: const Color(0xFF1C1C1E),
                       borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: Colors.redAccent.withOpacity(0.2)),
+                      border:
+                          Border.all(color: Colors.redAccent.withOpacity(0.2)),
                     ),
                     child: ListTile(
-                      leading: const Icon(Icons.settings_backup_restore, color: Colors.redAccent),
-                      title: const Text('Restaurar toda la bóveda', style: TextStyle(fontSize: 13, color: Colors.redAccent)),
-                      subtitle: const Text('Mueve todos los archivos fuera y olvida la carpeta actual.', style: TextStyle(fontSize: 11, color: Colors.white54)),
+                      leading: const Icon(Icons.settings_backup_restore,
+                          color: Colors.redAccent),
+                      title: const Text('Restaurar toda la bóveda',
+                          style:
+                              TextStyle(fontSize: 13, color: Colors.redAccent)),
+                      subtitle: const Text(
+                          'Mueve todos los archivos fuera y olvida la carpeta actual.',
+                          style:
+                              TextStyle(fontSize: 11, color: Colors.white54)),
                       onTap: () {
                         widget.onRestoreAll!();
                       },
@@ -3653,90 +4435,90 @@ class _SettingsScreenState extends State<SettingsScreen> {
 }
 
 // --- UTILIDADES DE OFUSCACIÓN (CIFRADO PERSONALIZADO) ---
-  
-  // Cifra la extensión (Ej: .png -> 0qoh)
-  String _cipherExtension(String ext) {
-    String result = '';
-    for (int i = 0; i < ext.length; i++) {
-      String char = ext[i].toLowerCase();
-      if (char == '.') {
-        result += '0';
-      } else if (RegExp(r'[a-z]').hasMatch(char)) {
-        int charCode = char.codeUnitAt(0);
-        int nextCode = charCode == 122 ? 97 : charCode + 1; // z -> a
-        result += String.fromCharCode(nextCode);
-      } else {
-        result += char; // Mantiene números como el 4
-      }
+
+// Cifra la extensión (Ej: .png -> 0qoh)
+String _cipherExtension(String ext) {
+  String result = '';
+  for (int i = 0; i < ext.length; i++) {
+    String char = ext[i].toLowerCase();
+    if (char == '.') {
+      result += '0';
+    } else if (RegExp(r'[a-z]').hasMatch(char)) {
+      int charCode = char.codeUnitAt(0);
+      int nextCode = charCode == 122 ? 97 : charCode + 1; // z -> a
+      result += String.fromCharCode(nextCode);
+    } else {
+      result += char; // Mantiene números como el 4
     }
-    return result;
   }
+  return result;
+}
 
-  // Descifra la extensión (Ej: 0qoh -> .png)
-  String _decipherExtension(String ciphered) {
-    String result = '';
-    for (int i = 0; i < ciphered.length; i++) {
-      String char = ciphered[i].toLowerCase();
-      if (char == '0') {
-        result += '.';
-      } else if (RegExp(r'[a-z]').hasMatch(char)) {
-        int charCode = char.codeUnitAt(0);
-        int prevCode = charCode == 97 ? 122 : charCode - 1; // a -> z
-        result += String.fromCharCode(prevCode);
-      } else {
-        result += char; // Mantiene números como el 4
-      }
+// Descifra la extensión (Ej: 0qoh -> .png)
+String _decipherExtension(String ciphered) {
+  String result = '';
+  for (int i = 0; i < ciphered.length; i++) {
+    String char = ciphered[i].toLowerCase();
+    if (char == '0') {
+      result += '.';
+    } else if (RegExp(r'[a-z]').hasMatch(char)) {
+      int charCode = char.codeUnitAt(0);
+      int prevCode = charCode == 97 ? 122 : charCode - 1; // a -> z
+      result += String.fromCharCode(prevCode);
+    } else {
+      result += char; // Mantiene números como el 4
     }
-    return result;
   }
+  return result;
+}
 
-  // Convierte: "imagen.mp4" -> "imagen0nq4.vtx"
-  String _obfuscateName(String originalName) {
-    if (originalName.toLowerCase().endsWith('.vtx')) return originalName;
+// Convierte: "imagen.mp4" -> "imagen0nq4.vtx"
+String _obfuscateName(String originalName) {
+  if (originalName.toLowerCase().endsWith('.vtx')) return originalName;
 
-    final ext = p.extension(originalName); // Ej: .mp4
-    final base = p.basenameWithoutExtension(originalName); // Ej: imagen
-    final cipheredExt = _cipherExtension(ext); // Ej: 0nq4
+  final ext = p.extension(originalName); // Ej: .mp4
+  final base = p.basenameWithoutExtension(originalName); // Ej: imagen
+  final cipheredExt = _cipherExtension(ext); // Ej: 0nq4
 
-    return '$base$cipheredExt.vtx';
-  }
+  return '$base$cipheredExt.vtx';
+}
 
-  // Convierte: "imagen0nq4.vtx" -> "imagen.mp4"
-  String _getDeobfuscatedName(String filename) {
-    if (filename.toLowerCase().endsWith('.vtx')) {
-      final base = p.basenameWithoutExtension(filename); // Ej: imagen0nq4
-      final lastZero = base.lastIndexOf('0'); // Buscamos dónde empieza el cifrado
-      
-      if (lastZero != -1) {
-        final realBase = base.substring(0, lastZero); // imagen
-        final realExt = _decipherExtension(base.substring(lastZero)); // .mp4
-        return '$realBase$realExt';
-      }
-      return base;
+// Convierte: "imagen0nq4.vtx" -> "imagen.mp4"
+String _getDeobfuscatedName(String filename) {
+  if (filename.toLowerCase().endsWith('.vtx')) {
+    final base = p.basenameWithoutExtension(filename); // Ej: imagen0nq4
+    final lastZero = base.lastIndexOf('0'); // Buscamos dónde empieza el cifrado
+
+    if (lastZero != -1) {
+      final realBase = base.substring(0, lastZero); // imagen
+      final realExt = _decipherExtension(base.substring(lastZero)); // .mp4
+      return '$realBase$realExt';
     }
-    return filename;
+    return base;
   }
+  return filename;
+}
 
-  // Obtiene la extensión real oculta: ".mp4"
-  String _getRealExtension(String filename) {
-    if (filename.toLowerCase().endsWith('.vtx')) {
-      final base = p.basenameWithoutExtension(filename);
-      final lastZero = base.lastIndexOf('0');
-      
-      if (lastZero != -1) {
-        return _decipherExtension(base.substring(lastZero));
-      }
+// Obtiene la extensión real oculta: ".mp4"
+String _getRealExtension(String filename) {
+  if (filename.toLowerCase().endsWith('.vtx')) {
+    final base = p.basenameWithoutExtension(filename);
+    final lastZero = base.lastIndexOf('0');
+
+    if (lastZero != -1) {
+      return _decipherExtension(base.substring(lastZero));
     }
-    return p.extension(filename).toLowerCase();
   }
+  return p.extension(filename).toLowerCase();
+}
 
-  // Detecta videos leyendo la extensión real descifrada
-  bool _isVideo(String filePath) {
-    final ext = _getRealExtension(filePath);
-    return ['.mp4', '.mov', '.avi', '.mkv'].contains(ext);
-  }
+// Detecta videos leyendo la extensión real descifrada
+bool _isVideo(String filePath) {
+  final ext = _getRealExtension(filePath);
+  return ['.mp4', '.mov', '.avi', '.mkv'].contains(ext);
+}
 
-  class TagManagementScreen extends StatefulWidget {
+class TagManagementScreen extends StatefulWidget {
   final MetadataService metadataService;
   const TagManagementScreen({super.key, required this.metadataService});
 
@@ -3746,17 +4528,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
 class _TagManagementScreenState extends State<TagManagementScreen> {
   late List<String> _allTags; // Guardará TODAS las etiquetas
-  late List<String> _filteredTags; // Guardará solo las que coincidan con la búsqueda
-  
+  late List<String>
+      _filteredTags; // Guardará solo las que coincidan con la búsqueda
+
   final TextEditingController _editController = TextEditingController();
-  final TextEditingController _searchController = TextEditingController(); // Controlador del buscador
+  final TextEditingController _searchController =
+      TextEditingController(); // Controlador del buscador
 
   @override
   void initState() {
     super.initState();
     _allTags = widget.metadataService.getAllTags()..sort();
     _filteredTags = List.from(_allTags); // Al inicio, mostramos todas
-    
+
     // Escuchamos cada vez que el usuario escribe algo para filtrar en tiempo real
     _searchController.addListener(_filterTags);
   }
@@ -3775,9 +4559,8 @@ class _TagManagementScreenState extends State<TagManagementScreen> {
       if (query.isEmpty) {
         _filteredTags = List.from(_allTags);
       } else {
-        _filteredTags = _allTags
-            .where((tag) => tag.toLowerCase().contains(query))
-            .toList();
+        _filteredTags =
+            _allTags.where((tag) => tag.toLowerCase().contains(query)).toList();
       }
     });
   }
@@ -3813,7 +4596,10 @@ class _TagManagementScreenState extends State<TagManagementScreen> {
                 children: [
                   const Text(
                     'Renombrar Etiqueta',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white),
+                    style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white),
                   ),
                   const SizedBox(height: 16),
                   TextField(
@@ -3823,7 +4609,8 @@ class _TagManagementScreenState extends State<TagManagementScreen> {
                     decoration: InputDecoration(
                       filled: true,
                       fillColor: const Color(0xFF1C1C1E).withOpacity(0.8),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 12),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(8),
                         borderSide: BorderSide.none,
@@ -3838,17 +4625,22 @@ class _TagManagementScreenState extends State<TagManagementScreen> {
                     children: [
                       TextButton(
                         onPressed: () => Navigator.pop(context),
-                        style: TextButton.styleFrom(foregroundColor: Colors.white70),
-                        child: const Text('Cancelar', style: TextStyle(fontWeight: FontWeight.w500)),
+                        style: TextButton.styleFrom(
+                            foregroundColor: Colors.white70),
+                        child: const Text('Cancelar',
+                            style: TextStyle(fontWeight: FontWeight.w500)),
                       ),
                       TextButton(
                         onPressed: () async {
-                          await widget.metadataService.renameTagGlobal(oldTag, _editController.text);
+                          await widget.metadataService
+                              .renameTagGlobal(oldTag, _editController.text);
                           if (mounted) Navigator.pop(context);
                           _refresh();
                         },
-                        style: TextButton.styleFrom(foregroundColor: const Color(0xFF0A84FF)),
-                        child: const Text('Guardar', style: TextStyle(fontWeight: FontWeight.w600)),
+                        style: TextButton.styleFrom(
+                            foregroundColor: const Color(0xFF0A84FF)),
+                        child: const Text('Guardar',
+                            style: TextStyle(fontWeight: FontWeight.w600)),
                       ),
                     ],
                   ),
@@ -3867,72 +4659,87 @@ class _TagManagementScreenState extends State<TagManagementScreen> {
     final String nounText = count == 1 ? ' imagen' : ' imágenes';
 
     final bool confirm = await showDialog<bool>(
-      context: context,
-      barrierColor: Colors.black.withOpacity(0.4),
-      builder: (context) {
-        return Dialog(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(14.0),
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-              child: Container(
-                width: 320,
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF2C2C2E).withOpacity(0.8),
-                  border: Border.all(color: Colors.white12, width: 0.5),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text(
-                      'Eliminar Etiqueta',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white),
+          context: context,
+          barrierColor: Colors.black.withOpacity(0.4),
+          builder: (context) {
+            return Dialog(
+              backgroundColor: Colors.transparent,
+              elevation: 0,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(14.0),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                  child: Container(
+                    width: 320,
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF2C2C2E).withOpacity(0.8),
+                      border: Border.all(color: Colors.white12, width: 0.5),
                     ),
-                    const SizedBox(height: 16),
-                    RichText(
-                      textAlign: TextAlign.center,
-                      text: TextSpan(
-                        style: const TextStyle(color: Colors.white70, fontSize: 14, fontFamily: 'Segoe UI'), 
-                        children: [
-                          TextSpan(text: '¿Estás seguro de que deseas eliminar permanentemente la etiqueta "$tag"?\n\nActualmente está siendo usada por '),
-                          TextSpan(
-                            text: count.toString(),
-                            style: const TextStyle(
-                              color: Color(0xFF0A84FF),
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          TextSpan(text: '$nounText.'),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(context, false),
-                          style: TextButton.styleFrom(foregroundColor: Colors.white70),
-                          child: const Text('Cancelar', style: TextStyle(fontWeight: FontWeight.w500)),
+                        const Text(
+                          'Eliminar Etiqueta',
+                          style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white),
                         ),
-                        TextButton(
-                          onPressed: () => Navigator.pop(context, true),
-                          style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
-                          child: const Text('Eliminar', style: TextStyle(fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 16),
+                        RichText(
+                          textAlign: TextAlign.center,
+                          text: TextSpan(
+                            style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 14,
+                                fontFamily: 'Segoe UI'),
+                            children: [
+                              TextSpan(
+                                  text:
+                                      '¿Estás seguro de que deseas eliminar permanentemente la etiqueta "$tag"?\n\nActualmente está siendo usada por '),
+                              TextSpan(
+                                text: count.toString(),
+                                style: const TextStyle(
+                                  color: Color(0xFF0A84FF),
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              TextSpan(text: '$nounText.'),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, false),
+                              style: TextButton.styleFrom(
+                                  foregroundColor: Colors.white70),
+                              child: const Text('Cancelar',
+                                  style:
+                                      TextStyle(fontWeight: FontWeight.w500)),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, true),
+                              style: TextButton.styleFrom(
+                                  foregroundColor: Colors.redAccent),
+                              child: const Text('Eliminar',
+                                  style:
+                                      TextStyle(fontWeight: FontWeight.w600)),
+                            ),
+                          ],
                         ),
                       ],
                     ),
-                  ],
+                  ),
                 ),
               ),
-            ),
-          ),
-        );
-      },
-    ) ?? false;
+            );
+          },
+        ) ??
+        false;
 
     if (confirm) {
       await widget.metadataService.deleteTagGlobal(tag);
@@ -3944,7 +4751,8 @@ class _TagManagementScreenState extends State<TagManagementScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Gestionar Etiquetas', style: TextStyle(fontSize: 15)),
+        title:
+            const Text('Gestionar Etiquetas', style: TextStyle(fontSize: 15)),
       ),
       body: Column(
         children: [
@@ -3957,17 +4765,20 @@ class _TagManagementScreenState extends State<TagManagementScreen> {
               decoration: InputDecoration(
                 filled: true,
                 fillColor: const Color(0xFF1C1C1E),
-                prefixIcon: const Icon(Icons.search, color: Colors.white54, size: 20),
+                prefixIcon:
+                    const Icon(Icons.search, color: Colors.white54, size: 20),
                 // Botón para limpiar la búsqueda rápidamente
-                suffixIcon: _searchController.text.isNotEmpty 
-                  ? IconButton(
-                      icon: const Icon(Icons.cancel, color: Colors.white54, size: 16),
-                      onPressed: () {
-                        _searchController.clear();
-                        FocusScope.of(context).unfocus(); // Oculta el teclado si está en móvil/tablet
-                      },
-                    )
-                  : null,
+                suffixIcon: _searchController.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.cancel,
+                            color: Colors.white54, size: 16),
+                        onPressed: () {
+                          _searchController.clear();
+                          FocusScope.of(context)
+                              .unfocus(); // Oculta el teclado si está en móvil/tablet
+                        },
+                      )
+                    : null,
                 contentPadding: const EdgeInsets.symmetric(vertical: 0),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
@@ -3978,33 +4789,44 @@ class _TagManagementScreenState extends State<TagManagementScreen> {
               ),
             ),
           ),
-          
+
           // --- LISTA DE ETIQUETAS FILTRADA ---
           Expanded(
             child: _allTags.isEmpty
-                ? const Center(child: Text('No hay etiquetas guardadas.', style: TextStyle(color: Colors.white54)))
+                ? const Center(
+                    child: Text('No hay etiquetas guardadas.',
+                        style: TextStyle(color: Colors.white54)))
                 : _filteredTags.isEmpty
-                    ? const Center(child: Text('No se encontraron coincidencias.', style: TextStyle(color: Colors.white54)))
+                    ? const Center(
+                        child: Text('No se encontraron coincidencias.',
+                            style: TextStyle(color: Colors.white54)))
                     : ListView.separated(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
-                        itemCount: _filteredTags.length, // <-- Usamos la lista filtrada
-                        separatorBuilder: (_, __) => const Divider(height: 1, indent: 40, color: Colors.white12),
+                        itemCount: _filteredTags
+                            .length, // <-- Usamos la lista filtrada
+                        separatorBuilder: (_, __) => const Divider(
+                            height: 1, indent: 40, color: Colors.white12),
                         itemBuilder: (context, index) {
-                          final tag = _filteredTags[index]; // <-- Usamos la lista filtrada
+                          final tag = _filteredTags[
+                              index]; // <-- Usamos la lista filtrada
                           return ListTile(
                             contentPadding: EdgeInsets.zero,
-                            leading: const Icon(Icons.tag, size: 18, color: Colors.white54),
-                            title: Text(tag, style: const TextStyle(fontSize: 14)),
+                            leading: const Icon(Icons.tag,
+                                size: 18, color: Colors.white54),
+                            title:
+                                Text(tag, style: const TextStyle(fontSize: 14)),
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 IconButton(
-                                  icon: const Icon(Icons.edit_outlined, size: 18, color: Colors.white54),
+                                  icon: const Icon(Icons.edit_outlined,
+                                      size: 18, color: Colors.white54),
                                   onPressed: () => _showEditDialog(tag),
                                   tooltip: 'Renombrar',
                                 ),
                                 IconButton(
-                                  icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+                                  icon: const Icon(Icons.delete_outline,
+                                      size: 18, color: Colors.redAccent),
                                   onPressed: () => _confirmDelete(tag),
                                   tooltip: 'Eliminar',
                                 ),

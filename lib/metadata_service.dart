@@ -146,6 +146,7 @@ class MetadataService {
           'image_id': newId,
           'tags': jsonEncode(metadata.tags),
           'rating': metadata.rating,
+          'added_timestamp': metadata.addedTimestamp,
         },
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
@@ -169,6 +170,7 @@ class MetadataService {
           'image_id': newKey,
           'tags': jsonEncode(metadata.tags),
           'rating': metadata.rating,
+          'added_timestamp': metadata.addedTimestamp,
         },
         conflictAlgorithm: ConflictAlgorithm.replace,
       );

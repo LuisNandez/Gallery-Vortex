@@ -248,6 +248,33 @@ class ThumbnailService {
     _cache.removeWhere((key, value) => p.basename(key) == originalImageName);
   }
 
+  Future<void> renameThumbnail(String oldOriginalPath, String newOriginalPath) async {
+    // 1. Obtenemos los nombres de las miniaturas
+    final oldThumbName = _getThumbName(oldOriginalPath);
+    final newThumbName = _getThumbName(newOriginalPath);
+    
+    final oldThumbFile = File(p.join(_thumbnailDir!.path, oldThumbName));
+    final newThumbFile = File(p.join(_thumbnailDir!.path, newThumbName));
+
+    // 2. Renombramos el archivo físico en el disco duro
+    if (await oldThumbFile.exists()) {
+      try {
+        await oldThumbFile.rename(newThumbFile.path);
+      } catch (e) {
+        // Fallback seguro por si el OS bloquea el rename directo
+        await oldThumbFile.copy(newThumbFile.path);
+        await oldThumbFile.delete();
+      }
+    }
+
+    // 3. Actualizamos la memoria RAM (caché) para que la UI lo encuentre al instante
+    if (_cache.containsKey(oldOriginalPath)) {
+      _cache.remove(oldOriginalPath);
+      // Lo insertamos con la nueva ruta
+      _cache[newOriginalPath] = newThumbFile;
+    }
+  }
+
   void clearMemoryCache() {
     _cache.clear();
   }
