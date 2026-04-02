@@ -1161,6 +1161,15 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       if (_VaultExplorerScreenState._clipboard.isNotEmpty)
         _ContextMenuItemWidget(
             title: 'Pegar', onTap: _handlePaste, icon: Icons.content_paste_go),
+      if (_selectedItems.isEmpty && _vortexPath != null)
+        _ContextMenuItemWidget(
+          title: 'Crear carpeta',
+          onTap: () {
+            _hideContextMenu();
+            _showCreateFolderDialog();
+          },
+          icon: Icons.create_new_folder_outlined,
+        ),
       if (_selectedItems.length == 1)
         _ContextMenuItemWidget(
           title: 'Renombrar',
