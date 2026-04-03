@@ -3961,14 +3961,15 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                     _hideTimer?.cancel(); // Matar cualquier contador de la imagen anterior
                     setState(() {
                       _currentIndex = index;
-                      _showNavigation = true; // Siempre mostrar flechas al cambiar
+                      if (!_isTrueFullScreen) {
+                        _showNavigation = true; 
+                      }
                     });
                     
-                    // Si la nueva página es una imagen, iniciamos su contador
-                    if (!_isVideo(widget.imageFiles[index].path)) {
+                    
+                    if (!_isVideo(widget.imageFiles[index].path) && _showNavigation) {
                       _startHideTimer();
                     }
-                    // Si es video, el CustomVideoPlayer se encargará al cargarse
                   },
                   itemBuilder: (context, index) {
                     final imageFile = widget.imageFiles[index];
@@ -3979,6 +3980,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                       return CustomVideoPlayer(
                         videoFile: imageFile,
                         isFullScreen: _isTrueFullScreen, // Pasamos el estado
+                        startControlsVisible: _showNavigation,
                         onToggleFullscreen: _toggleTrueFullScreen, // Pasamos la función
                         onControlsVisibilityChanged: (visible) {
                           setState(() => _showNavigation = visible);

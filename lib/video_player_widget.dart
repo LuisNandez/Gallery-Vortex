@@ -10,6 +10,7 @@ class CustomVideoPlayer extends StatefulWidget {
   final bool isFullScreen; // Recibe el estado del padre
   final VoidCallback? onToggleFullscreen; // Recibe la función del padre
   final ValueChanged<bool>? onControlsVisibilityChanged;
+  final bool startControlsVisible;
 
   const CustomVideoPlayer({
     super.key, 
@@ -17,6 +18,7 @@ class CustomVideoPlayer extends StatefulWidget {
     this.isFullScreen = false,
     this.onToggleFullscreen,
     this.onControlsVisibilityChanged,
+    this.startControlsVisible = true,
   });
 
   @override
@@ -28,7 +30,7 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
   late final Player _player = Player();
   late final VideoController _controller = VideoController(_player);
 
-  bool _controlsVisible = true;
+  late bool _controlsVisible;
   bool _isPlaying = true;
   double _volume = 100.0;
   Duration _position = Duration.zero;
@@ -52,6 +54,8 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
   @override
   void initState() {
     super.initState();
+    _controlsVisible = widget.startControlsVisible;
+
     _player.open(Media(widget.videoFile.path), play: true);
     _player.setPlaylistMode(PlaylistMode.loop); 
 
@@ -68,8 +72,11 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
       if (mounted) setState(() => _volume = volume);
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      widget.onControlsVisibilityChanged?.call(true);
+      widget.onControlsVisibilityChanged?.call(_controlsVisible);
     });
+    if (_controlsVisible) {
+      _startHideTimer();
+    }
 
     _startHideTimer();
   }
