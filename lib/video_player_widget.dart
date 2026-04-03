@@ -9,12 +9,14 @@ class CustomVideoPlayer extends StatefulWidget {
   final File videoFile;
   final bool isFullScreen; // Recibe el estado del padre
   final VoidCallback? onToggleFullscreen; // Recibe la función del padre
+  final ValueChanged<bool>? onControlsVisibilityChanged;
 
   const CustomVideoPlayer({
     super.key, 
     required this.videoFile,
     this.isFullScreen = false,
     this.onToggleFullscreen,
+    this.onControlsVisibilityChanged,
   });
 
   @override
@@ -65,6 +67,9 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
     _player.stream.volume.listen((volume) {
       if (mounted) setState(() => _volume = volume);
     });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      widget.onControlsVisibilityChanged?.call(true);
+    });
 
     _startHideTimer();
   }
@@ -100,6 +105,7 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
     _hideTimer = Timer(const Duration(seconds: 3), () {
       if (mounted && _isPlaying && !_isHoveringControls) {
         setState(() => _controlsVisible = false);
+        widget.onControlsVisibilityChanged?.call(false); 
       }
     });
   }
@@ -107,6 +113,7 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
   void _onPointerHover() {
     if (!_controlsVisible) {
       setState(() => _controlsVisible = true);
+      widget.onControlsVisibilityChanged?.call(true);
     }
     _startHideTimer();
   }
@@ -133,8 +140,11 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
               child: GestureDetector(
                 onDoubleTap: widget.onToggleFullscreen, // Llama al padre
                 onTap: () {
-                  setState(() => _controlsVisible = !_controlsVisible);
-                  if (_controlsVisible) _startHideTimer();
+                  final newVisible = !_controlsVisible;
+                  setState(() => _controlsVisible = newVisible);
+                  // NOTIFICAR AL PADRE
+                  widget.onControlsVisibilityChanged?.call(newVisible);
+                  if (newVisible) _startHideTimer();
                 },
                 child: Video(
                   controller: _controller,

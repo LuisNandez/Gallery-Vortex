@@ -3610,7 +3610,9 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
   final GlobalKey _ratingButtonKey = GlobalKey(); // Para saber dónde dibujar el menú
   OverlayEntry? _ratingOverlay; // Para guardar el menú flotante
   bool _isTrueFullScreen = false;
+  bool _showNavigation = true;
   final FocusNode _viewerFocusNode = FocusNode();
+  Timer? _hideTimer;
 
   String _getCleanName(String path) {
     String filename = p.basename(path);
@@ -3632,7 +3634,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
     //_initWindowState();
     _currentIndex = widget.initialIndex;
     _pageController = PageController(initialPage: widget.initialIndex);
-    
+    _startHideTimer();
   }
 
   Future<void> _exportCurrentImage() async {
@@ -3690,9 +3692,46 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
     }
   }
 
+  // NUEVA FUNCIÓN: Despierta o alterna la interfaz
+  void _wakeUpUI({bool toggle = false}) {
+    final currentFile = widget.imageFiles[_currentIndex];
+    final isVideo = _isVideo(currentFile.path);
+
+    if (toggle) {
+      setState(() => _showNavigation = !_showNavigation);
+    } else {
+      // Si la UI está oculta, la mostramos al mover el mouse
+      if (!_showNavigation) {
+        setState(() => _showNavigation = true);
+      }
+    }
+    
+    // IMPORTANTE: El temporizador de 'main.dart' SOLO debe correr para imágenes.
+    // Para videos, dejamos que el CustomVideoPlayer controle el tiempo.
+    if (_showNavigation && !isVideo) {
+      _startHideTimer();
+    } else if (!isVideo) {
+      _hideTimer?.cancel();
+    }
+  }
+
+  // NUEVA FUNCIÓN: Inicia la cuenta regresiva
+  void _startHideTimer() {
+    final currentFile = widget.imageFiles[_currentIndex];
+    if (_isVideo(currentFile.path)) return; 
+
+    _hideTimer?.cancel();
+    _hideTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) {
+        setState(() => _showNavigation = false);
+      }
+    });
+  }
+
   @override
   void dispose() {
     //windowManager.removeListener(this);
+    _hideTimer?.cancel();
     _viewerFocusNode.dispose();
     _ratingOverlay?.remove();
     _pageController.dispose();
@@ -3886,19 +3925,26 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                 ),
               ],
             ),
-            body: Stack(
-              alignment: Alignment.center,
-              children: [
+            body: MouseRegion(
+              onHover: (_) => _wakeUpUI(),
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
                 PageView.builder(
                   controller: _pageController,
                   itemCount: widget.imageFiles.length,
                   onPageChanged: (index) {
+                    _hideTimer?.cancel(); // Matar cualquier contador de la imagen anterior
                     setState(() {
                       _currentIndex = index;
+                      _showNavigation = true; // Siempre mostrar flechas al cambiar
                     });
-                    if (widget.onPageChangedCallback != null) {
-                      widget.onPageChangedCallback!(index);
+                    
+                    // Si la nueva página es una imagen, iniciamos su contador
+                    if (!_isVideo(widget.imageFiles[index].path)) {
+                      _startHideTimer();
                     }
+                    // Si es video, el CustomVideoPlayer se encargará al cargarse
                   },
                   itemBuilder: (context, index) {
                     final imageFile = widget.imageFiles[index];
@@ -3910,51 +3956,68 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                         videoFile: imageFile,
                         isFullScreen: _isTrueFullScreen, // Pasamos el estado
                         onToggleFullscreen: _toggleTrueFullScreen, // Pasamos la función
+                        onControlsVisibilityChanged: (visible) {
+                          setState(() => _showNavigation = visible);
+                        },
                       );
                     }
-                    return Hero(
-                      tag: isCurrentPage
-                          ? imageFile.path
-                          : '${imageFile.path}_disabled',
-                      child: InteractiveViewer(
-                        panEnabled: false,
-                        minScale: 1.0,
-                        maxScale: 4.0,
-                        child: Image.file(
-                          imageFile,
-                          fit: BoxFit.contain,
+                    return GestureDetector(
+                        onTap: () => _wakeUpUI(toggle: true),
+                        child: Hero(
+                          tag: isCurrentPage ? imageFile.path : '${imageFile.path}_disabled',
+                          child: InteractiveViewer(
+                            panEnabled: false,
+                            minScale: 1.0,
+                            maxScale: 4.0,
+                            child: Image.file(imageFile, fit: BoxFit.contain),
+                          ),
                         ),
-                      ),
-                    );
+                      );
+                      
                   },
                 ),
                 if (_currentIndex > 0)
                   Positioned(
                     left: 10,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.5),
-                        shape: BoxShape.circle,
-                      ),
-                      child: IconButton(
-                        icon: const Icon(Icons.arrow_back_ios_new,
-                            color: Colors.white),
-                        onPressed: _irAAnterior, // Usamos la función nueva
+                    // Envolvemos el Container, NO el Positioned
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 300),
+                      opacity: _showNavigation ? 1.0 : 0.0,
+                      child: IgnorePointer(
+                        ignoring: !_showNavigation, // Evita clics fantasma cuando es invisible
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.5),
+                            shape: BoxShape.circle,
+                          ),
+                          child: IconButton(
+                            icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white),
+                            onPressed: _irAAnterior, 
+                          ),
+                        ),
                       ),
                     ),
                   ),
+
+                // --- FLECHA DERECHA ---
                 if (_currentIndex < widget.imageFiles.length - 1)
                   Positioned(
                     right: 10,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.5),
-                        shape: BoxShape.circle,
-                      ),
-                      child: IconButton(
-                        icon: const Icon(Icons.arrow_forward_ios,
-                            color: Colors.white),
-                        onPressed: _irASiguiente, // Usamos la función nueva
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 300),
+                      opacity: _showNavigation ? 1.0 : 0.0,
+                      child: IgnorePointer(
+                        ignoring: !_showNavigation,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.5),
+                            shape: BoxShape.circle,
+                          ),
+                          child: IconButton(
+                            icon: const Icon(Icons.arrow_forward_ios, color: Colors.white),
+                            onPressed: _irASiguiente, 
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -3962,22 +4025,34 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                   Positioned(
                     bottom: 20,
                     right: 20,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.5),
-                        shape: BoxShape.circle,
-                      ),
-                      child: IconButton(
-                        icon: Icon(
-                          _isTrueFullScreen ? Icons.fullscreen_exit_rounded : Icons.fullscreen_rounded,
-                          color: Colors.white,
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 300),
+                      opacity: _showNavigation ? 1.0 : 0.0,
+                      child: IgnorePointer(
+                        ignoring: !_showNavigation, // Desactiva el botón cuando no se ve
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.5),
+                            shape: BoxShape.circle,
+                          ),
+                          child: IconButton(
+                            icon: Icon(
+                              _isTrueFullScreen 
+                                  ? Icons.fullscreen_exit_rounded 
+                                  : Icons.fullscreen_rounded,
+                              color: Colors.white,
+                            ),
+                            tooltip: _isTrueFullScreen 
+                                ? 'Salir de pantalla completa' 
+                                : 'Pantalla completa real',
+                            onPressed: _toggleTrueFullScreen,
+                          ),
                         ),
-                        tooltip: _isTrueFullScreen ? 'Salir de pantalla completa' : 'Pantalla completa',
-                        onPressed: _toggleTrueFullScreen,
                       ),
                     ),
                   ),
               ],
+            ),
             ),
           ),
         ),
