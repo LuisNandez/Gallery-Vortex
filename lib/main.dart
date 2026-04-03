@@ -18,6 +18,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:local_notifier/local_notifier.dart';
 import 'dart:ui';
 import 'package:google_fonts/google_fonts.dart';
+import 'dart:ffi' hide Size;
 
 // Imports de los nuevos archivos
 import 'metadata_service.dart';
@@ -533,12 +534,29 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _initializeAppServices();
   }
 
+  void _forceWindowsToReclaimRAM() {
+    if (Platform.isWindows) {
+      try {
+        final kernel32 = DynamicLibrary.open('kernel32.dll');
+        final getCurrentProcess = kernel32.lookupFunction<IntPtr Function(), int Function()>('GetCurrentProcess');
+        final setProcessWorkingSetSize = kernel32.lookupFunction<Int32 Function(IntPtr, IntPtr, IntPtr), int Function(int, int, int)>('SetProcessWorkingSetSize');
+
+        final processHandle = getCurrentProcess();
+        // Pasar -1 y -1 le ruega a Windows que limpie la memoria asignada al proceso
+        setProcessWorkingSetSize(processHandle, -1, -1);
+      } catch (e) {
+        debugPrint("No se pudo reducir la RAM nativa: $e");
+      }
+    }
+  }
+
   void pause() {
     print("VaultExplorer pausado. Liberando recursos de UI...");
     setState(() {
       _isPaused = true;
       // Vaciamos las listas grandes para liberar RAM.
       _vaultContents.clear();
+      _filteredVaultContents.clear();
       _itemKeys.clear();
       _selectedItems.clear();
       // Le pedimos al servicio de miniaturas que limpie su caché de memoria RAM.
@@ -547,6 +565,14 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     });
     PaintingBinding.instance.imageCache.clear();
     PaintingBinding.instance.imageCache.clearLiveImages();
+    WidgetsBinding.instance.handleMemoryPressure();
+
+    //// Le damos a Flutter un respiro de 100ms para que termine de destruir 
+    // los widgets antes de ordenarle a Windows que nos quite la RAM.
+    Future.delayed(const Duration(milliseconds: 100), () {
+      _forceWindowsToReclaimRAM();
+    });
+
   }
 
   void resume() {
@@ -869,13 +895,13 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       // Ahora escuchamos tanto creaciones como modificaciones
       if ((event.type == ChangeType.ADD || event.type == ChangeType.MODIFY) &&
           _isSupportedFile(event.path)) {
-        final filePath = event.path;
+        final pathKey = event.path.toLowerCase();
 
         // Si ya estamos vigilando este archivo, lo ignoramos para no saturar
-        if (_processingFiles.contains(filePath)) return;
+        if (_processingFiles.contains(pathKey)) return;
 
-        final file = File(filePath);
-        _processingFiles.add(filePath); // Lo agregamos a la lista de espera
+        final file = File(event.path);
+        _processingFiles.add(pathKey);
 
         try {
           final isReady = await _waitUntilFileIsReady(file);
@@ -885,7 +911,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           }
         } finally {
           // Una vez absorbido (o fallido), lo quitamos de la lista
-          _processingFiles.remove(filePath);
+          _processingFiles.remove(pathKey);
         }
       }
     });
@@ -992,13 +1018,19 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           final showNotif = prefs.getBool(_showNotificationsKey) ?? true;
 
           if (showNotif && _backgroundAbsorbedCount > 0) {
+            // 1. Armamos y "congelamos" el texto exacto ANTES de tocar el contador
+            final String mensaje = "Se han enviado $_backgroundAbsorbedCount archivo(s) a la bóveda.";
+            
+            // 2. Ahora sí, vaciamos el contador de forma segura
+            _backgroundAbsorbedCount = 0;
+
+            // 3. Mandamos la alerta a Windows usando el texto congelado
             final notification = LocalNotification(
+              identifier: 'gvortex_absorb_notif', 
               title: "GVortex",
-              body:
-                  "Se han enviado $_backgroundAbsorbedCount archivo(s) a la bóveda.",
+              body: mensaje,
             );
             await notification.show();
-            _backgroundAbsorbedCount = 0;
           }
         });
       }
@@ -1492,6 +1524,11 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         ),
       ),
     );
+
+    // LIMPIEZA DE MEMORIA: Al cerrar el visor, forzamos a Flutter a liberar las imágenes que ya no se necesitan.
+    PaintingBinding.instance.imageCache.clear();
+    PaintingBinding.instance.imageCache.clearLiveImages();
+    WidgetsBinding.instance.handleMemoryPressure();
 
     // NUEVO: Sincronizamos la selección al volver
     if (returnedIndex != null) {
@@ -3758,12 +3795,14 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
 
   void _precacheAdjacentImages(int index) {
     if (!mounted) return;
-    
+    // Calculamos un tamaño de precarga dinámico basado en el ancho de la pantalla, con límites para no sobrecargar la memoria
+    final double screenWidth = MediaQuery.of(context).size.width;
+    final int lowResWidth = (screenWidth / 1.5).clamp(400.0, 1200.0).toInt();
     // Precargar la imagen SIGUIENTE
     if (index + 1 < widget.imageFiles.length) {
       final nextFile = widget.imageFiles[index + 1];
       if (!_isVideo(nextFile.path)) {
-        precacheImage(FileImage(nextFile), context);
+        precacheImage(ResizeImage(FileImage(nextFile), width: lowResWidth), context);
       }
     }
     
@@ -3771,7 +3810,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
     if (index - 1 >= 0) {
       final prevFile = widget.imageFiles[index - 1];
       if (!_isVideo(prevFile.path)) {
-        precacheImage(FileImage(prevFile), context);
+        precacheImage(ResizeImage(FileImage(prevFile), width: lowResWidth), context);
       }
     }
   }
@@ -4004,7 +4043,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                   },
                   itemBuilder: (context, index) {
                     final imageFile = widget.imageFiles[index];
-                    //final bool isCurrentPage = index == _currentIndex;
+                    final bool isCurrentPage = index == _currentIndex;
 
                     final bool isVideo = _isVideo(imageFile.path);
                     if (isVideo) {
@@ -4018,15 +4057,35 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                         },
                       );
                     }
+                    // Para imágenes, aplicamos la lógica de precarga y el sistema de ocultar/mostrar la UI
+                    final double screenWidth = MediaQuery.of(context).size.width;
+                    final int lowResWidth = (screenWidth / 1.5).clamp(400.0, 1200.0).toInt();
+                    
                     return GestureDetector(
                         onTap: () => _wakeUpUI(toggle: true),
                         child: Hero(
                           tag: imageFile.path,
                           child: InteractiveViewer(
-                            panEnabled: false,
+                            // 3. Solo permitimos paneo/zoom en la imagen central
+                            panEnabled: isCurrentPage, 
                             minScale: 1.0,
                             maxScale: 4.0,
-                            child: Image.file(imageFile, fit: BoxFit.contain),
+                            child: isCurrentPage 
+                              // 4A. IMAGEN CENTRAL: Se carga con toda su gloria y resolución original
+                              ? Image.file(
+                                  imageFile, 
+                                  fit: BoxFit.contain,
+                                  // gaplessPlayback es crucial. Evita que la pantalla parpadee en 
+                                  // negro mientras se cambia de la versión de baja a alta resolución.
+                                  gaplessPlayback: true, 
+                                )
+                              // 4B. IMÁGENES LATERALES: Se cargan ligeras (consumiendo ~5MB en lugar de ~100MB)
+                              : Image.file(
+                                  imageFile, 
+                                  fit: BoxFit.contain,
+                                  cacheWidth: lowResWidth, 
+                                  gaplessPlayback: true,
+                                ),
                           ),
                         ),
                       );
