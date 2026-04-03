@@ -2,26 +2,30 @@ import 'dart:io';
 import 'dart:ui';
 import 'dart:async';
 import 'package:flutter/material.dart';
-// Volvemos a tu librería de alto rendimiento
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
-import 'package:window_manager/window_manager.dart';
 
 class CustomVideoPlayer extends StatefulWidget {
   final File videoFile;
+  final bool isFullScreen; // Recibe el estado del padre
+  final VoidCallback? onToggleFullscreen; // Recibe la función del padre
 
-  const CustomVideoPlayer({super.key, required this.videoFile});
+  const CustomVideoPlayer({
+    super.key, 
+    required this.videoFile,
+    this.isFullScreen = false,
+    this.onToggleFullscreen,
+  });
 
   @override
   State<CustomVideoPlayer> createState() => _CustomVideoPlayerState();
 }
 
-class _CustomVideoPlayerState extends State<CustomVideoPlayer> with WindowListener {
-  // Motores de media_kit restaurados
+// ¡ELIMINAMOS el 'with WindowListener'!
+class _CustomVideoPlayerState extends State<CustomVideoPlayer> { 
   late final Player _player = Player();
   late final VideoController _controller = VideoController(_player);
 
-  bool _isFullScreenOrMaximized = false;
   bool _controlsVisible = true;
   bool _isPlaying = true;
   double _volume = 100.0;
@@ -33,7 +37,7 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> with WindowListen
   String _getCleanName(String path) {
     String filename = path.split(Platform.pathSeparator).last;
     if (filename.toLowerCase().endsWith('.vtx')) {
-      String base = filename.substring(0, filename.length - 4); // Quita .vtx
+      String base = filename.substring(0, filename.length - 4); 
       int lastZero = base.lastIndexOf('0');
       if (lastZero != -1) {
         return base.substring(0, lastZero); 
@@ -46,16 +50,9 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> with WindowListen
   @override
   void initState() {
     super.initState();
-    windowManager.addListener(this);
-    _initWindowState();
-
-    // 1. Inicializamos con reproducción automática
     _player.open(Media(widget.videoFile.path), play: true);
-    
-    // 2. SOLUCIÓN LOOP: Configuramos el modo de reproducción en bucle
     _player.setPlaylistMode(PlaylistMode.loop); 
 
-    // Escuchadores para actualizar la barra de progreso e iconos
     _player.stream.playing.listen((playing) {
       if (mounted) setState(() => _isPlaying = playing);
     });
@@ -72,28 +69,8 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> with WindowListen
     _startHideTimer();
   }
 
-  Future<void> _initWindowState() async {
-    final isFull = await windowManager.isFullScreen();
-    final isMax = await windowManager.isMaximized();
-    if (mounted) setState(() => _isFullScreenOrMaximized = isFull || isMax);
-  }
-
-  @override
-  void onWindowEnterFullScreen() => _updateIconState(true);
-  @override
-  void onWindowLeaveFullScreen() => _updateIconState(false);
-  @override
-  void onWindowMaximize() => _updateIconState(true);
-  @override
-  void onWindowRestore() => _updateIconState(false);
-
-  void _updateIconState(bool isMaximized) {
-    if (mounted) setState(() => _isFullScreenOrMaximized = isMaximized);
-  }
-
   @override
   void dispose() {
-    windowManager.removeListener(this);
     _hideTimer?.cancel();
     _player.dispose();
     super.dispose();
@@ -115,15 +92,6 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> with WindowListen
       _player.setVolume(100.0);
     } else {
       _player.setVolume(0.0);
-    }
-  }
-
-  Future<void> _toggleFullscreen() async {
-    final isFull = await windowManager.isFullScreen();
-    if (isFull) {
-      await windowManager.setFullScreen(false);
-    } else {
-      await windowManager.setFullScreen(true);
     }
   }
 
@@ -157,27 +125,23 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> with WindowListen
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      // Usamos MouseRegion para que los controles despierten al mover el mouse
       body: MouseRegion(
         onHover: (_) => _onPointerHover(),
         child: Stack(
           children: [
-            // REPRODUCTOR MEDIA_KIT (Alto rendimiento devuelto)
             Center(
               child: GestureDetector(
-                onDoubleTap: _toggleFullscreen,
+                onDoubleTap: widget.onToggleFullscreen, // Llama al padre
                 onTap: () {
                   setState(() => _controlsVisible = !_controlsVisible);
                   if (_controlsVisible) _startHideTimer();
                 },
                 child: Video(
                   controller: _controller,
-                  controls: NoVideoControls, // Apagamos los controles base para usar los nuestros
+                  controls: NoVideoControls, 
                 ),
               ),
             ),
-
-            // CONTROLES MAC OS
             AnimatedOpacity(
               opacity: _controlsVisible ? 1.0 : 0.0,
               duration: const Duration(milliseconds: 300),
@@ -251,7 +215,7 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> with WindowListen
     return Align(
       alignment: Alignment.bottomCenter,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 800), // Evita que se estire demasiado en FullScreen
+        constraints: const BoxConstraints(maxWidth: 800), 
         child: ClipRRect(
           borderRadius: BorderRadius.circular(18),
           child: BackdropFilter(
@@ -265,7 +229,6 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> with WindowListen
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // 3. SOLUCIÓN BARRA INTERACTIVA
                   Row(
                     children: [
                       Text(
@@ -287,12 +250,10 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> with WindowListen
                               trackShape: const RoundedRectSliderTrackShape(),
                             ),
                             child: Slider(
-                              // Evitamos errores matemáticos si el video aún no carga su duración
                               value: _position.inMilliseconds.toDouble().clamp(0.0, _duration.inMilliseconds.toDouble() > 0 ? _duration.inMilliseconds.toDouble() : 0.0),
                               min: 0.0,
                               max: _duration.inMilliseconds.toDouble() > 0 ? _duration.inMilliseconds.toDouble() : 1.0,
                               onChanged: (value) {
-                                // Buscamos en el video la posición seleccionada
                                 _player.seek(Duration(milliseconds: value.toInt()));
                               },
                             ),
@@ -307,8 +268,6 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> with WindowListen
                     ],
                   ),
                   const SizedBox(height: 8),
-                  
-                  // BOTONES
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
@@ -331,11 +290,11 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> with WindowListen
                       ),
                       IconButton(
                         icon: Icon(
-                          _isFullScreenOrMaximized ? Icons.fullscreen_exit_rounded : Icons.fullscreen_rounded,
+                          widget.isFullScreen ? Icons.fullscreen_exit_rounded : Icons.fullscreen_rounded,
                           size: 22,
                         ),
                         color: Colors.white70,
-                        onPressed: _toggleFullscreen,
+                        onPressed: widget.onToggleFullscreen, // Delega la acción
                       ),
                     ],
                   ),

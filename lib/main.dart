@@ -3607,9 +3607,10 @@ class FullScreenImageViewer extends StatefulWidget {
 class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
   late PageController _pageController;
   late int _currentIndex;
-  final GlobalKey _ratingButtonKey =
-      GlobalKey(); // Para saber dónde dibujar el menú
+  final GlobalKey _ratingButtonKey = GlobalKey(); // Para saber dónde dibujar el menú
   OverlayEntry? _ratingOverlay; // Para guardar el menú flotante
+  bool _isTrueFullScreen = false;
+  final FocusNode _viewerFocusNode = FocusNode();
 
   String _getCleanName(String path) {
     String filename = p.basename(path);
@@ -3627,8 +3628,11 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
   @override
   void initState() {
     super.initState();
+    //windowManager.addListener(this);
+    //_initWindowState();
     _currentIndex = widget.initialIndex;
     _pageController = PageController(initialPage: widget.initialIndex);
+    
   }
 
   Future<void> _exportCurrentImage() async {
@@ -3637,8 +3641,59 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
     widget.onClose();
   }
 
+  Future<void> _toggleTrueFullScreen() async {
+    if (_isTrueFullScreen) {
+      // 1. Actualizamos la interfaz
+      if (mounted) setState(() => _isTrueFullScreen = false);
+      
+      // 2. Restauramos la barra de título normal y des-maximizamos
+      await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+      await windowManager.unmaximize();
+      
+      // 3. Devolvemos el foco al teclado
+      _viewerFocusNode.requestFocus();
+      if (Platform.isWindows || Platform.isMacOS) {
+        await windowManager.focus();
+      }
+    } else {
+      // 1. Actualizamos la interfaz
+      if (mounted) setState(() => _isTrueFullScreen = true);
+      
+      // 2. Ocultamos la barra de título (Borderless) y maximizamos
+      await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+      await windowManager.maximize();
+    }
+  }
+
+  Future<void> _cerrarVisor() async {
+    // Si está en pantalla completa, debemos restaurar la ventana normal ANTES de cerrar
+    if (_isTrueFullScreen) {
+      if (mounted) setState(() => _isTrueFullScreen = false);
+      await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+      await windowManager.unmaximize();
+      // Pequeño respiro para que el sistema operativo acomode la ventana antes de destruir la vista
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
+    
+    if (mounted) {
+      Navigator.of(context).pop(_currentIndex);
+    }
+  }
+
+  void _handleEscape() {
+    if (_isTrueFullScreen) {
+      // Si estamos en pantalla completa, solo salimos de ella
+      _toggleTrueFullScreen();
+    } else {
+      // Si ya estamos en ventana normal, cerramos el visor
+      _cerrarVisor();
+    }
+  }
+
   @override
   void dispose() {
+    //windowManager.removeListener(this);
+    _viewerFocusNode.dispose();
     _ratingOverlay?.remove();
     _pageController.dispose();
     super.dispose();
@@ -3774,14 +3829,15 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
             onInvoke: (intent) => _irAAnterior(),
           ),
           CloseViewerIntent: CallbackAction<CloseViewerIntent>(
-            onInvoke: (intent) => Navigator.of(context).pop(_currentIndex),
+            onInvoke: (intent) => _handleEscape(), // Usamos la nueva función aquí
           ),
         },
         child: Focus(
+          focusNode: _viewerFocusNode,
           autofocus: true, // Importante para que detecte el teclado al instante
           child: Scaffold(
             backgroundColor: Colors.black,
-            appBar: AppBar(
+            appBar: _isTrueFullScreen ? null : AppBar(
               backgroundColor: Colors.black,
               elevation: 0,
               // --- AQUÍ AGREGAMOS EL NOMBRE DEL ARCHIVO ---
@@ -3791,7 +3847,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
               ),
               leading: IconButton(
                 icon: const Icon(Icons.close, color: Colors.white),
-                onPressed: () => Navigator.of(context).pop(_currentIndex),
+                onPressed: _cerrarVisor,
               ),
               actions: [
                 // 1. Botón de Etiquetas
@@ -3850,8 +3906,11 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
 
                     final bool isVideo = _isVideo(imageFile.path);
                     if (isVideo) {
-                      // Retornamos el video SIN Hero para evitar el congelamiento
-                      return CustomVideoPlayer(videoFile: imageFile);
+                      return CustomVideoPlayer(
+                        videoFile: imageFile,
+                        isFullScreen: _isTrueFullScreen, // Pasamos el estado
+                        onToggleFullscreen: _toggleTrueFullScreen, // Pasamos la función
+                      );
                     }
                     return Hero(
                       tag: isCurrentPage
@@ -3896,6 +3955,25 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                         icon: const Icon(Icons.arrow_forward_ios,
                             color: Colors.white),
                         onPressed: _irASiguiente, // Usamos la función nueva
+                      ),
+                    ),
+                  ),
+                  if (!_isVideo(currentFile.path)) 
+                  Positioned(
+                    bottom: 20,
+                    right: 20,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.5),
+                        shape: BoxShape.circle,
+                      ),
+                      child: IconButton(
+                        icon: Icon(
+                          _isTrueFullScreen ? Icons.fullscreen_exit_rounded : Icons.fullscreen_rounded,
+                          color: Colors.white,
+                        ),
+                        tooltip: _isTrueFullScreen ? 'Salir de pantalla completa' : 'Pantalla completa',
+                        onPressed: _toggleTrueFullScreen,
                       ),
                     ),
                   ),
