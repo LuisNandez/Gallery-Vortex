@@ -43,6 +43,7 @@ enum CloseAction { exit, minimize }
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 1024 * 1024 * 50; // 50 MB para la caché de miniaturas
   MediaKit.ensureInitialized();
   bool startHidden = args.contains('--minimized');
 
@@ -544,6 +545,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       _thumbnailService.clearMemoryCache();
       // NO cancelamos el _watcherSubscription, ya que debe seguir funcionando.
     });
+    PaintingBinding.instance.imageCache.clear();
+    PaintingBinding.instance.imageCache.clearLiveImages();
   }
 
   void resume() {
