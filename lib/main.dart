@@ -3655,6 +3655,13 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
     _startHideTimer();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Precargamos los vecinos de la imagen con la que se abrió el visor
+    _precacheAdjacentImages(_currentIndex);
+  }
+
   Future<void> _exportCurrentImage() async {
     final currentFile = widget.imageFiles[_currentIndex];
     await widget.exportCallback(currentFile);
@@ -3744,6 +3751,26 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
         setState(() => _showNavigation = false);
       }
     });
+  }
+
+  void _precacheAdjacentImages(int index) {
+    if (!mounted) return;
+    
+    // Precargar la imagen SIGUIENTE
+    if (index + 1 < widget.imageFiles.length) {
+      final nextFile = widget.imageFiles[index + 1];
+      if (!_isVideo(nextFile.path)) {
+        precacheImage(FileImage(nextFile), context);
+      }
+    }
+    
+    // Precargar la imagen ANTERIOR
+    if (index - 1 >= 0) {
+      final prevFile = widget.imageFiles[index - 1];
+      if (!_isVideo(prevFile.path)) {
+        precacheImage(FileImage(prevFile), context);
+      }
+    }
   }
 
   @override
@@ -3965,15 +3992,16 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                         _showNavigation = true; 
                       }
                     });
-                    
+                    _precacheAdjacentImages(index);
                     
                     if (!_isVideo(widget.imageFiles[index].path) && _showNavigation) {
                       _startHideTimer();
                     }
+                    widget.onPageChangedCallback?.call(index);
                   },
                   itemBuilder: (context, index) {
                     final imageFile = widget.imageFiles[index];
-                    final bool isCurrentPage = index == _currentIndex;
+                    //final bool isCurrentPage = index == _currentIndex;
 
                     final bool isVideo = _isVideo(imageFile.path);
                     if (isVideo) {
@@ -3990,7 +4018,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                     return GestureDetector(
                         onTap: () => _wakeUpUI(toggle: true),
                         child: Hero(
-                          tag: isCurrentPage ? imageFile.path : '${imageFile.path}_disabled',
+                          tag: imageFile.path,
                           child: InteractiveViewer(
                             panEnabled: false,
                             minScale: 1.0,
