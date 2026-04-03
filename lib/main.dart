@@ -118,6 +118,10 @@ class CloseViewerIntent extends Intent {
   const CloseViewerIntent();
 }
 
+class ToggleFullScreenIntent extends Intent {
+  const ToggleFullScreenIntent();
+}
+
 class MyApp extends StatelessWidget {
   final bool startHidden; // <-- NUEVO
   const MyApp({super.key, this.startHidden = false});
@@ -463,6 +467,9 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
 
+  // NUEVO: FocusNode para la cuadrícula
+  final FocusNode _gridFocusNode = FocusNode();
+
   // State para visualización de miniaturas
   bool _showRatingsOnThumbnail = true;
   bool _showTagsCountOnThumbnail = true;
@@ -644,6 +651,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _notificationTimer?.cancel();
     _searchController.dispose();
     _searchFocusNode.dispose();
+    _gridFocusNode.dispose();
     super.dispose();
   }
 
@@ -1499,6 +1507,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     }
 
     if (mounted) {
+      _gridFocusNode.requestFocus();
       Future.delayed(const Duration(milliseconds: 50), () {
         _scrollToFocusedItem(animate: true);
       });
@@ -2218,7 +2227,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                 if (_isSearchVisible) {
                   _searchFocusNode.requestFocus();
                 } else {
-                  FocusScope.of(context).unfocus();
+                  _gridFocusNode.requestFocus();
                 }
               },
             ),
@@ -2428,7 +2437,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                                     _searchController.clear();
                                     _applySearchFilter();
                                   });
-                                  FocusScope.of(context).unfocus();
+                                  _gridFocusNode.requestFocus();
                                 }
                               },
                               child: TextField(
@@ -2590,7 +2599,16 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                   onInvoke: (i) => _abrirSeleccionado()),
             },
             child: Focus(
+              focusNode: _gridFocusNode,
               autofocus: true,
+              onKeyEvent: (FocusNode node, KeyEvent event) {
+                if (event.logicalKey == LogicalKeyboardKey.tab) {
+                  // Le decimos a Flutter "Ya me encargué de esta tecla, no hagas nada más"
+                  return KeyEventResult.handled; 
+                }
+                // Para cualquier otra tecla, dejamos que Flutter haga su trabajo normal
+                return KeyEventResult.ignored;
+              },
               child: Scrollbar(
                 controller: _scrollController,
                 thumbVisibility: true,
@@ -3858,6 +3876,8 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
             const AnteriorImagenIntent(),
         const SingleActivator(LogicalKeyboardKey.escape):
             const CloseViewerIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyF):
+            const ToggleFullScreenIntent(),
       },
       child: Actions(
         actions: <Type, Action<Intent>>{
@@ -3869,6 +3889,9 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
           ),
           CloseViewerIntent: CallbackAction<CloseViewerIntent>(
             onInvoke: (intent) => _handleEscape(), // Usamos la nueva función aquí
+          ),
+          ToggleFullScreenIntent: CallbackAction<ToggleFullScreenIntent>(
+            onInvoke: (intent) => _toggleTrueFullScreen(),
           ),
         },
         child: Focus(
@@ -3926,6 +3949,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
               ],
             ),
             body: MouseRegion(
+              cursor: _showNavigation ? SystemMouseCursors.basic : SystemMouseCursors.none,
               onHover: (_) => _wakeUpUI(),
               child: Stack(
                 alignment: Alignment.center,
@@ -4044,7 +4068,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                             ),
                             tooltip: _isTrueFullScreen 
                                 ? 'Salir de pantalla completa' 
-                                : 'Pantalla completa real',
+                                : 'Pantalla completa',
                             onPressed: _toggleTrueFullScreen,
                           ),
                         ),

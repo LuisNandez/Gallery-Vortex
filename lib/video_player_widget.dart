@@ -133,6 +133,7 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
     return Scaffold(
       backgroundColor: Colors.black,
       body: MouseRegion(
+        cursor: _controlsVisible ? SystemMouseCursors.basic : SystemMouseCursors.none,
         onHover: (_) => _onPointerHover(),
         child: Stack(
           children: [
