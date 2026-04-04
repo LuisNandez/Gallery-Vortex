@@ -38,6 +38,9 @@ const String _sortAscendingKey = 'sort_ascending';
 const String _showRatingsKey = 'show_ratings_thumbnail';
 const String _showTagsKey = 'show_tags_thumbnail';
 
+final GlobalKey<_VaultExplorerScreenState> _mainVaultKey = GlobalKey<_VaultExplorerScreenState>();
+final ValueNotifier<bool> appVisibilityNotifier = ValueNotifier<bool>(true);
+
 enum SortCriteria { date, name, size }
 
 enum CloseAction { exit, minimize }
@@ -192,7 +195,17 @@ class MyApp extends StatelessWidget {
         dividerTheme:
             const DividerThemeData(color: Colors.white12, thickness: 0.5),
       ),
-      home: AuthWrapper(startHidden: startHidden),
+      builder: (context, child) {
+        return AuthWrapper(
+          startHidden: startHidden,
+          navigatorChild: child!, // Pasamos la app entera al Wrapper
+        );
+      },
+      home: VaultExplorerScreen(
+        key: _mainVaultKey,
+        startPaused: startHidden,
+        setAuthenticated: (value) {}, // Ya no importa aquí
+      ),
     );
   }
 }
@@ -222,19 +235,21 @@ class BackgroundServiceScreen extends StatelessWidget {
 
 class AuthWrapper extends StatefulWidget {
   final bool startHidden;
-  const AuthWrapper({super.key, this.startHidden = false});
+  final Widget navigatorChild;
+  
+  const AuthWrapper({
+    super.key, 
+    this.startHidden = false, 
+    required this.navigatorChild
+  });
 
   @override
   State<AuthWrapper> createState() => _AuthWrapperState();
 }
 
-class _AuthWrapperState extends State<AuthWrapper>
-    with WindowListener, TrayListener {
+class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayListener {
   bool _isAuthenticated = false;
   late bool _isWindowVisible;
-
-  final GlobalKey<_VaultExplorerScreenState> _vaultExplorerKey =
-      GlobalKey<_VaultExplorerScreenState>();
 
   @override
   void initState() {
@@ -252,52 +267,34 @@ class _AuthWrapperState extends State<AuthWrapper>
     super.dispose();
   }
 
-  void _requirePinAndGoHome() {
-    if (!mounted) return;
-
-    // 1. Cierra cualquier subcarpeta, visor de imágenes o ajustes abiertos
-    Navigator.of(context).popUntil((route) => route.isFirst);
-
-    // 2. Bloquea la app exigiendo el PIN nuevamente
-    setState(() {
-      _isAuthenticated = false;
-    });
-  }
-
   Future<void> _initTray() async {
     await trayManager.setIcon(
       Platform.isWindows ? 'assets/app_icon.ico' : 'assets/app_icon.png',
     );
     await trayManager.setToolTip('Galería Vórtice');
-    // Eliminamos el setContextMenu de aquí. Lo crearemos dinámicamente en el clic derecho.
   }
 
   @override
   void onTrayIconMouseDown() {
-    windowManager.show();
-    _requirePinAndGoHome();
+    appVisibilityNotifier.value = true; // Despierta las carpetas
     setState(() {
-      _isWindowVisible = true;
       _isAuthenticated = false;
+      _isWindowVisible = true;
     });
-    _vaultExplorerKey.currentState?.resume();
+    windowManager.show();
   }
 
   @override
   void onTrayIconRightMouseDown() async {
-    // Leemos la variable directamente usando la GlobalKey
-    final isPaused = _vaultExplorerKey.currentState?.isWatcherPaused ?? false;
-
+    final isPaused = _mainVaultKey.currentState?.isWatcherPaused ?? false;
     Menu menu = Menu(items: [
       MenuItem(key: 'show_window', label: 'Mostrar Aplicación'),
-      // Mostramos un texto distinto según el estado de la variable
       MenuItem(
           key: 'toggle_watcher',
           label: isPaused ? '▶ Reanudar Vórtice' : '⏸ Pausar Vórtice'),
       MenuItem.separator(),
       MenuItem(key: 'exit_application', label: 'Cerrar Aplicación'),
     ]);
-
     await trayManager.setContextMenu(menu);
     trayManager.popUpContextMenu();
   }
@@ -305,87 +302,72 @@ class _AuthWrapperState extends State<AuthWrapper>
   @override
   void onTrayMenuItemClick(MenuItem menuItem) {
     if (menuItem.key == 'show_window') {
-      windowManager.show();
-      _requirePinAndGoHome();
-      setState(() {
-        _isWindowVisible = true;
-        _isAuthenticated = false;
-      });
-      _vaultExplorerKey.currentState?.resume();
+      onTrayIconMouseDown();
     } else if (menuItem.key == 'toggle_watcher') {
-      // Mandamos a llamar la función del explorador desde aquí afuera
-      _vaultExplorerKey.currentState?.toggleWatcher();
+      _mainVaultKey.currentState?.toggleWatcher();
     } else if (menuItem.key == 'exit_application') {
       windowManager.destroy();
     }
   }
 
-  void onWindowHide() {
-    _requirePinAndGoHome();
-    setState(() {
-      _isWindowVisible = false;
-      // Le decimos a VaultExplorer que libere sus recursos de UI.
-      _vaultExplorerKey.currentState?.pause();
-    });
-  }
-
-  void onWindowShow() {
-    _requirePinAndGoHome();
-    setState(() {
-      _isWindowVisible = true;
-      _isAuthenticated = false; // Forzar re-autenticación por seguridad.
-      // Le decimos a VaultExplorer que se prepare para ser mostrado.
-      _vaultExplorerKey.currentState?.resume();
-    });
-  }
-
   @override
   void onWindowMinimize() {
-    //_requirePinAndGoHome();
-    // Si el usuario minimiza con el botón (-), también activamos la pausa
-    _vaultExplorerKey.currentState?.pause();
+    appVisibilityNotifier.value = false; // Duerme las carpetas
   }
 
   @override
   void onWindowRestore() {
-    // Al restaurar la ventana desde la barra de tareas, reanudamos
-    _vaultExplorerKey.currentState?.resume();
+    appVisibilityNotifier.value = true; // Despierta las carpetas
+  }
+
+  @override
+  void onWindowClose() async {
+    final prefs = await SharedPreferences.getInstance();
+    final closeAction = prefs.getString('close_action') ?? 'minimize';
+
+    if (closeAction == 'exit') {
+      windowManager.destroy(); 
+    } else {
+      appVisibilityNotifier.value = false; // Duerme las carpetas
+      setState(() {
+        _isWindowVisible = false;
+        _isAuthenticated = false; 
+      });
+      windowManager.hide();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        // 1. El explorador SIEMPRE está vivo para que el Watcher funcione,
-        // pero lo ocultamos (Offstage) si no está visible o no hay PIN ingresado.
+        // 1. APLICACIÓN PRINCIPAL (Congelada si no hay PIN o ventana)
         Offstage(
           offstage: !_isWindowVisible || !_isAuthenticated,
-          child: VaultExplorerScreen(
-            key: _vaultExplorerKey,
-            startPaused: widget.startHidden,
-            setAuthenticated: (value) {
-              setState(() {
-                _isAuthenticated = value;
-              });
-            },
-          ),
+          child: widget.navigatorChild, 
         ),
 
-        // 2. Pantallas de estado superpuestas (Bloqueo o Background)
+        // 2. ESCUDOS
         if (!_isWindowVisible)
           const BackgroundServiceScreen()
         else if (!_isAuthenticated)
-          PinAuthScreen(
-            onAuthenticated: () {
-              setState(() {
-                _isAuthenticated = true;
-              });
-            },
-            setAuthenticated: (value) {
-              setState(() {
-                _isAuthenticated = value;
-              });
-            },
+          HeroControllerScope.none(
+            child: Navigator(
+              onGenerateRoute: (settings) => MaterialPageRoute(
+                builder: (context) => PinAuthScreen(
+                  onAuthenticated: () {
+                    setState(() {
+                      _isAuthenticated = true;
+                    });
+                  },
+                  setAuthenticated: (value) {
+                    setState(() {
+                      _isAuthenticated = value;
+                    });
+                  },
+                ),
+              ),
+            ),
           ),
       ],
     );
@@ -532,6 +514,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _isPaused = widget.startPaused;
     windowManager.addListener(this);
     _initializeAppServices();
+    appVisibilityNotifier.addListener(_onVisibilityChanged);
   }
 
   void _forceWindowsToReclaimRAM() {
@@ -576,14 +559,14 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
 
   void resume() {
+    if (!mounted) return; // <-- Agregamos seguridad
     print("VaultExplorer reanudado. Recargando contenido...");
     setState(() {
-      _isPaused = false; // <-- Desactivamos la pausa
+      _isPaused = false; 
     });
-    // Volvemos a cargar las imágenes al abrir la ventana
-    if (_vortexPath != null) {
-      _loadVaultContents();
-    }
+    // Quitamos el "if (_vortexPath != null)" para que siempre recargue la UI
+    // sin importar si es la raíz o una subcarpeta.
+    _loadVaultContents();
   }
 
   void _initializeAppServices() async {
@@ -603,13 +586,19 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   Future<void> _syncPreferences() async {
     final prefs = await SharedPreferences.getInstance();
 
-    // Leemos los valores más recientes de la base de datos local
+    // Leemos los valores más recientes de la configuración
     final sortIndex = prefs.getInt(_sortCriteriaKey) ?? SortCriteria.date.index;
     final sortAscending = prefs.getBool(_sortAscendingKey) ?? true;
     final showRatings = prefs.getBool(_showRatingsKey) ?? true;
     final showTags = prefs.getBool(_showTagsKey) ?? true;
 
-    // Actualizamos el estado de esta pantalla específica
+    // NUEVO: Solo leemos el disco si de verdad cambiaste la forma de ordenar
+    bool needsReload = false;
+    if (_currentSortCriteria.index != sortIndex || _sortAscending != sortAscending) {
+      needsReload = true;
+    }
+
+    // Actualizamos el estado visual instantáneamente (estrellas, tamaño, etc.)
     setState(() {
       _currentSortCriteria = SortCriteria.values[sortIndex];
       _sortAscending = sortAscending;
@@ -617,8 +606,10 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       _showTagsCountOnThumbnail = showTags;
     });
 
-    // Recargamos el contenido para que se aplique el nuevo ordenamiento
-    await _loadVaultContents();
+    // Si el ordenamiento cambió, entonces sí leemos el disco duro
+    if (needsReload) {
+      await _loadVaultContents();
+    }
   }
 
   /// Mueve una carpeta entera desde el Vórtice a la bóveda.
@@ -670,6 +661,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   @override
   void dispose() {
+    appVisibilityNotifier.removeListener(_onVisibilityChanged);
     windowManager.removeListener(this);
     _watcherSubscription?.cancel();
     _folderNameController.dispose();
@@ -684,8 +676,17 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     super.dispose();
   }
 
+  void _onVisibilityChanged() {
+    if (!mounted) return;
+    if (appVisibilityNotifier.value) {
+      resume();
+    } else {
+      pause();
+    }
+  }
+
   // --- Window and Tray Listener Methods ---
-  @override
+  /*@override
   void onWindowClose() async {
     // <-- Convertir a async
     // --- LÓGICA MODIFICADA ---
@@ -696,11 +697,11 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     if (closeAction == CloseAction.exit.name) {
       windowManager.destroy(); // Cierra la app
     } else {
-      pause();
+      //pause();
       windowManager.hide(); // Minimiza a la bandeja
     }
     // --- FIN DE LA MODIFICACIÓN ---
-  }
+  }*/
 
   /*@override
   void onTrayIconMouseDown() {
@@ -743,8 +744,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       setState(() {
         _vortexPath = path;
       });
-      await _absorbInitialVortexContents(Directory(path), reloadUI: false);
-      _startWatcher(path);
+      
+      // NUEVO: Verificamos que sea la carpeta PRINCIPAL antes de encender el Watcher
+      if (widget.currentDirectory == null) {
+        await _absorbInitialVortexContents(Directory(path), reloadUI: false);
+        _startWatcher(path);
+      }
     }
 
     await _loadVaultContents();
