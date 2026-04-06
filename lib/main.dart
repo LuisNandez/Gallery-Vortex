@@ -931,9 +931,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       await _watcherSubscription?.cancel();
       _watcherSubscription = null;
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Vigilancia del Vórtice pausada.')),
-        );
+        showGlassSnackBar(context, 'Vigilancia del Vórtice pausada.', icon: Icons.pause_circle_outline, iconColor: Colors.amber);
       }
     } else {
       if (_vortexPath != null) {
@@ -943,9 +941,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         await _loadVaultContents(quiet: true);
 
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Vigilancia del Vórtice reanudada.')),
-          );
+          showGlassSnackBar(context, 'Vigilancia del Vórtice reanudada.', icon: Icons.play_circle_outline, iconColor: Colors.green);
         }
       }
     }
@@ -1081,11 +1077,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           await _absorbDirectory(entity);
         } else {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                  content: Text(
-                      'Carpeta "${p.basename(entity.path)}" ignorada: contiene archivos no válidos o está vacía.')),
-            );
+            showGlassSnackBar(context, 'Carpeta "${p.basename(entity.path)}" ignorada: contiene archivos no válidos o está vacía.', icon: Icons.warning_amber_rounded, iconColor: Colors.amber);
           }
         }
       }
@@ -1153,11 +1145,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       _VaultExplorerScreenState._clipboard = _selectedItems.toList();
       _selectedItems.clear();
     });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-          content: Text(
-              '${_VaultExplorerScreenState._clipboard.length} elemento(s) cortado(s).')),
-    );
+    showGlassSnackBar(context, '${_VaultExplorerScreenState._clipboard.length} elemento(s) cortado(s).', icon: Icons.content_cut, iconColor: Colors.white);
   }
 
   Future<void> _handlePaste() async {
@@ -1834,9 +1822,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     } catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error al procesar la carpeta: $e')),
-        );
+        showGlassSnackBar(context, 'Error al procesar la carpeta: $e', icon: Icons.error_outline, iconColor: Colors.redAccent);
       }
     }
   }
@@ -2154,9 +2140,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         await _loadVaultContents(quiet: true);
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error al renombrar: $e')),
-          );
+          showGlassSnackBar(context, 'Error al renombrar: $e', icon: Icons.error_outline, iconColor: Colors.redAccent);
         }
       }
     }
@@ -3016,9 +3000,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     }
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(
-              '${_selectedItems.length} elemento(s) exportado(s) con éxito a ${exportRootDir.path}.')));
+      showGlassSnackBar(context, '${_selectedItems.length} elemento(s) exportado(s) con éxito a ${exportRootDir.path}.', icon: Icons.download_done);
     }
     setState(() => _selectedItems.clear());
   }
@@ -3040,14 +3022,11 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     try {
       await file.copy(newPath);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content:
-                Text('Archivo exportado con éxito a ${exportRootDir.path}.')));
+        showGlassSnackBar(context, 'Archivo exportado con éxito a ${exportRootDir.path}.', icon: Icons.download_done);
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error al exportar: $e')));
+        showGlassSnackBar(context, 'Error al exportar: $e', icon: Icons.error_outline, iconColor: Colors.redAccent);
       }
     }
   }
@@ -3083,11 +3062,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
     setState(() => _isLoading = false);
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content:
-                Text('Todos los archivos han sido restaurados exitosamente.')),
-      );
+      showGlassSnackBar(context, 'Todos los archivos han sido restaurados exitosamente.', icon: Icons.settings_backup_restore);
     }
   }
 
@@ -3794,6 +3769,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
   bool _showNavigation = true;
   final FocusNode _viewerFocusNode = FocusNode();
   Timer? _hideTimer;
+  bool _wasMaximized = false;
 
   String _getCleanName(String path) {
     String filename = p.basename(path);
@@ -3838,7 +3814,10 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
       
       // 2. Restauramos la barra de título normal y des-maximizamos
       await windowManager.setTitleBarStyle(TitleBarStyle.normal);
-      await windowManager.unmaximize();
+      if (!_wasMaximized) {
+        await windowManager.unmaximize();
+      }
+      
       
       // 3. Devolvemos el foco al teclado
       _viewerFocusNode.requestFocus();
@@ -3846,6 +3825,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
         await windowManager.focus();
       }
     } else {
+      _wasMaximized = await windowManager.isMaximized();
       // 1. Actualizamos la interfaz
       if (mounted) setState(() => _isTrueFullScreen = true);
       
@@ -3860,7 +3840,9 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
     if (_isTrueFullScreen) {
       if (mounted) setState(() => _isTrueFullScreen = false);
       await windowManager.setTitleBarStyle(TitleBarStyle.normal);
-      await windowManager.unmaximize();
+      if (!_wasMaximized) {
+        await windowManager.unmaximize();
+      }
       // Pequeño respiro para que el sistema operativo acomode la ventana antes de destruir la vista
       await Future.delayed(const Duration(milliseconds: 50));
     }
@@ -4620,25 +4602,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await prefs.setBool(_startupActionKey, value);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(value
-                ? 'Inicio automático activado.'
-                : 'Inicio automático desactivado.'),
-            duration: const Duration(seconds: 2),
-          ),
+        showGlassSnackBar(
+          context, 
+          value ? 'Inicio automático activado.' : 'Inicio automático desactivado.', 
+          icon: value ? Icons.toggle_on : Icons.toggle_off
         );
       }
     } catch (e) {
       // Si algo falla (ej. permisos), revertimos el switch
       if (mounted) {
         setState(() => _startup = !value);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error al cambiar el inicio automático: $e'),
-            backgroundColor: Colors.redAccent,
-          ),
-        );
+        showGlassSnackBar(context, 'Error al cambiar el inicio automático: $e', icon: Icons.error_outline, iconColor: Colors.redAccent);
       }
     }
   }
