@@ -72,6 +72,7 @@ void main(List<String> args) async {
 
   WindowOptions windowOptions = const WindowOptions(
     size: Size(800, 600),
+    minimumSize: Size(500, 400),
     center: true,
     backgroundColor: Colors.black,
     skipTaskbar: false,
@@ -3764,6 +3765,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
   late PageController _pageController;
   late int _currentIndex;
   final GlobalKey _ratingButtonKey = GlobalKey(); // Para saber dónde dibujar el menú
+  final GlobalKey _ratingButtonFloatingKey = GlobalKey();
   OverlayEntry? _ratingOverlay; // Para guardar el menú flotante
   bool _isTrueFullScreen = false;
   bool _showNavigation = true;
@@ -3931,12 +3933,12 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
   }
 
   void _showFullScreenRatingMenu(
-      BuildContext context, String imageId, int currentRating) {
+      BuildContext context, String imageId, int currentRating, GlobalKey anchorKey) {
     if (_ratingOverlay != null) return;
 
-    // Encontramos la posición exacta del botón en la barra superior
+    // NUEVO: Usamos el anchorKey en lugar de _ratingButtonKey
     final RenderBox? button =
-        _ratingButtonKey.currentContext?.findRenderObject() as RenderBox?;
+        anchorKey.currentContext?.findRenderObject() as RenderBox?;
     if (button == null) return;
     final position = button.localToGlobal(Offset.zero);
 
@@ -4093,6 +4095,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                   onPressed: () {
                     showDialog(
                       context: context,
+                      barrierColor: Colors.transparent,
                       builder: (context) => TagEditorDialog(
                         imageIds: [imageId],
                         metadataService: widget.metadataService,
@@ -4109,8 +4112,9 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                       ? const Icon(Icons.star, color: Colors.amber)
                       : const Icon(Icons.star_outline, color: Colors.white),
                   tooltip: 'Calificación',
+                  // NUEVO: Le pasamos su llave aquí al final
                   onPressed: () => _showFullScreenRatingMenu(
-                      context, imageId, currentRating),
+                      context, imageId, currentRating, _ratingButtonKey),
                 ),
 
                 // 3. Botón de Exportar
@@ -4238,6 +4242,61 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                             icon: const Icon(Icons.arrow_forward_ios, color: Colors.white),
                             onPressed: _irASiguiente, 
                           ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (_isTrueFullScreen)
+                  Positioned(
+                    top: 20,
+                    right: 20,
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 300),
+                      opacity: _showNavigation ? 1.0 : 0.0,
+                      child: IgnorePointer(
+                        ignoring: !_showNavigation,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Botón de Etiquetas Flotante
+                            Container(
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.5),
+                                shape: BoxShape.circle,
+                              ),
+                              child: IconButton(
+                                icon: const Icon(Icons.label_outline, color: Colors.white),
+                                tooltip: 'Etiquetas',
+                                onPressed: () {
+                                  showDialog(
+                                    context: context,
+                                    barrierColor: Colors.transparent,
+                                    builder: (context) => TagEditorDialog(
+                                      imageIds: [imageId],
+                                      metadataService: widget.metadataService,
+                                    ),
+                                  ).then((_) => setState(() {})); 
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            // Botón de Estrellas Flotante
+                            Container(
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.5),
+                                shape: BoxShape.circle,
+                              ),
+                              child: IconButton(
+                                key: _ratingButtonFloatingKey, // Usamos la llave nueva
+                                icon: currentRating > 0
+                                    ? const Icon(Icons.star, color: Colors.amber)
+                                    : const Icon(Icons.star_outline, color: Colors.white),
+                                tooltip: 'Calificación',
+                                onPressed: () => _showFullScreenRatingMenu(
+                                    context, imageId, currentRating, _ratingButtonFloatingKey),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ),
