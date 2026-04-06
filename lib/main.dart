@@ -25,7 +25,7 @@ import 'metadata_service.dart';
 import 'tag_editor_dialog.dart';
 import 'rating_stars_display.dart';
 import 'pin_input_boxes.dart';
-import 'thumbnail_service.dart'; // ¡IMPORTANTE! Importar el nuevo servicio
+import 'thumbnail_service.dart';
 
 const String _vortexFolderPathKey = 'vortex_folder_path';
 const String _masterPinKey = 'master_pin';
@@ -766,18 +766,18 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
     final contents = await _currentVaultDir.list().toList();
 
-    // --- MAGIA DE OPTIMIZACIÓN (CACHÉ) ---
-    // Pre-calculamos los valores UNA SOLA VEZ para que el ordenamiento sea instantáneo
     final Map<String, int> sizeCache = {};
     final Map<String, String> nameCache = {};
     final Map<String, int> timeCache = {};
 
     if (contents.isNotEmpty) {
+      final List<Future<void>> ioTasks = []; // Lista de tareas asíncronas
+
       for (final entity in contents) {
         if (entity is File) {
           if (_currentSortCriteria == SortCriteria.size) {
-            sizeCache[entity.path] =
-                entity.lengthSync(); // Solo 1 lectura al disco duro por archivo
+            // Usamos length() asíncrono y lo mandamos a la lista de tareas
+            ioTasks.add(entity.length().then((size) => sizeCache[entity.path] = size));
           } else if (_currentSortCriteria == SortCriteria.name) {
             nameCache[entity.path] =
                 _getDeobfuscatedName(p.basename(entity.path)).toLowerCase();
@@ -786,21 +786,19 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             int dbTime =
                 _metadataService.getMetadataForImage(id).addedTimestamp;
 
-            // --- PARCHE ANTISALTOS ---
-            // Si la imagen es antigua y tiene fecha 0 en la BD, usamos la fecha
-            // de modificación real del archivo físico en tu disco duro.
             if (dbTime == 0) {
-              try {
-                dbTime = entity.lastModifiedSync().millisecondsSinceEpoch;
-              } catch (_) {}
+              // Usamos lastModified() asíncrono
+              ioTasks.add(entity.lastModified().then((date) {
+                timeCache[entity.path] = date.millisecondsSinceEpoch;
+              }).catchError((_) {}));
+            } else {
+              timeCache[entity.path] = dbTime;
             }
-
-            timeCache[entity.path] = dbTime;
           }
         }
       }
+      await Future.wait(ioTasks);
     }
-    // --- FIN DE LA MAGIA ---
 
     contents.sort((a, b) {
       // Las carpetas siempre van primero
@@ -845,7 +843,9 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _applySearchFilter(); // Aplicamos el filtro antes de refrescar la UI
 
     setState(() {
-      _itemKeys.clear();
+      final currentPaths = contents.map((e) => e.path).toSet();
+      _itemKeys.removeWhere((key, _) => !currentPaths.contains(key));
+      
       _isLoading = false;
       _shiftSelectionAnchorIndex = null;
     });
@@ -984,12 +984,28 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
 
   Future<void> _moveFileRobustly(File sourceFile, String newPath) async {
-    try {
-      await sourceFile.rename(newPath);
-    } on FileSystemException {
-      final newFile = await sourceFile.copy(newPath);
-      if (await newFile.exists()) {
-        await sourceFile.delete();
+    int retries = 4; // Le damos 4 intentos si el motor cwebp lo tiene ocupado
+    while (retries > 0) {
+      try {
+        await sourceFile.rename(newPath);
+        return; // ¡Éxito a la primera!
+      } catch (e) {
+        try {
+          final newFile = await sourceFile.copy(newPath);
+          if (await newFile.exists()) {
+            await sourceFile.delete();
+            return; // ¡Éxito copiando y borrando!
+          }
+        } catch (copyDeleteError) {
+          retries--;
+          if (retries == 0) {
+            // Si falló definitivamente, borramos la copia a medias para no dejar basura
+            if (await File(newPath).exists()) await File(newPath).delete();
+            throw Exception("El archivo está bloqueado por Windows: $copyDeleteError");
+          }
+          // Esperamos un cuarto de segundo a que se libere antes de volver a intentar
+          await Future.delayed(const Duration(milliseconds: 250));
+        }
       }
     }
   }
@@ -1080,32 +1096,50 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     }
   }
 
-  Future<void> _moveEntity(
-      FileSystemEntity entity, Directory destination) async {
+  Future<void> _moveEntity(FileSystemEntity entity, Directory destination) async {
     try {
       final entityName = p.basename(entity.path);
       final newPath = await _getUniquePath(destination, entityName);
 
-      // --- INICIO DE LA MODIFICACIÓN ---
-      // Calculamos las rutas relativas (IDs) ANTES de mover el archivo
       final oldId = p.relative(entity.path, from: _vaultRootDir.path);
       final newId = p.relative(newPath, from: _vaultRootDir.path);
 
       if (entity is File) {
+        await _thumbnailService.renameThumbnail(entity.path, newPath);
         await _moveFileRobustly(entity, newPath);
       } else {
-        await entity.rename(newPath);
+        bool moved = false;
+        for (int i = 0; i < 3; i++) {
+          try {
+            await entity.rename(newPath);
+            moved = true;
+            break;
+          } catch (e) {
+            await Future.delayed(const Duration(milliseconds: 200));
+          }
+        }
+        if (!moved) throw Exception("La carpeta está en uso.");
       }
 
-      // Le avisamos a la base de datos que la ruta cambió para que mueva las etiquetas
+      // 3. La base de datos se actualiza (Aquí se salva tu fecha y etiquetas)
       await _metadataService.updateImagePath(oldId, newId);
-      // --- FIN DE LA MODIFICACIÓN ---
+
+      // --- NUEVO: Exorcizar al fantasma visual ---
+      if (mounted) {
+        setState(() {
+          // Quitamos la entidad completa, no solo su ruta (path)
+          _selectedItems.remove(entity);
+        });
+        
+        // Le pedimos a la app que vuelva a escanear la carpeta actual de inmediato.
+        // Al hacerlo, se dará cuenta de que el archivo ya no está y lo borrará de la pantalla.
+        await _loadVaultContents(quiet: true);
+      }
+
     } catch (e) {
       debugPrint("Error moving entity: $e");
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error al mover el archivo: $e')),
-        );
+        showGlassSnackBar(context, 'Error al mover: $e', icon: Icons.error_outline, iconColor: Colors.redAccent);
       }
     }
   }
@@ -1139,6 +1173,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
     setState(() {
       _VaultExplorerScreenState._clipboard = [];
+      _selectedItems.clear(); // <-- NUEVO: Suelta la selección fantasma
+      _shiftSelectionAnchorIndex = null; // <-- NUEVO: Limpia el ancla
     });
 
     await _loadVaultContents(quiet: true);
@@ -1637,7 +1673,14 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               setAuthenticated: widget.setAuthenticated,
             ),
           ),
-        ).then((_) => _syncPreferences());
+        ).then((_) async {
+          await _syncPreferences();
+          // La UI ya no se trabará, incluso si esto se ejecuta mientras
+          // la animación de la pantalla todavía se está deslizando.
+          if (mounted) {
+            await _loadVaultContents(quiet: true);
+          }
+        });
       } else if (entity is File) {
         final imageFiles = _filteredVaultContents.whereType<File>().toList();
         int initialIndex =
@@ -2318,21 +2361,28 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           ),
         ],
       ),
-      body: Column(
+      body: Stack( // <-- AÑADIMOS EL STACK AQUÍ
         children: [
-          Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _vortexPath == null
-                    ? _buildEmptyState(
-                        icon: Icons.all_inclusive,
-                        title: 'No has seleccionado una carpeta Vórtice.',
-                        subtitle:
-                            'Usa el botón para elegir una carpeta y empezar a vigilarla.',
-                      )
-                    : _buildFileExplorerBody(),
+          Column(
+            children: [
+              Expanded(
+                child: _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _vortexPath == null
+                        ? _buildEmptyState(
+                            icon: Icons.all_inclusive,
+                            title: 'No has seleccionado una carpeta Vórtice.',
+                            subtitle:
+                                'Usa el botón para elegir una carpeta y empezar a vigilarla.',
+                          )
+                        : _buildFileExplorerBody(),
+              ),
+              if (_vortexPath != null && !_isLoading) _buildThumbnailSlider(),
+            ],
           ),
-          if (_vortexPath != null && !_isLoading) _buildThumbnailSlider(),
+          
+          // --- AQUÍ INSERTAMOS LA BARRA FLOTANTE ---
+          _buildFloatingProgressBar(),
         ],
       ),
       floatingActionButton: widget.currentDirectory == null
@@ -3124,11 +3174,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     }
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text(
-                '$count elemento(s) restaurado(s) con éxito a ${destinationDir.path}.')),
-      );
+      showGlassSnackBar(context, '$count elemento(s) restaurado(s) con éxito a ${destinationDir.path}.');
     }
 
     setState(() {
@@ -3388,6 +3434,78 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildFloatingProgressBar() {
+    return ValueListenableBuilder<bool>(
+      // 1. Escuchamos si el motor está trabajando
+      valueListenable: _thumbnailService.isGeneratingNotifier,
+      builder: (context, isGenerating, child) {
+        if (!isGenerating) return const SizedBox.shrink(); // Si no trabaja, es invisible
+
+        return Positioned(
+          bottom: 80.0, // Flotando justo por encima del control de zoom
+          left: 0,
+          right: 0,
+          child: Center(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(20.0),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF252525).withOpacity(0.85),
+                    borderRadius: BorderRadius.circular(20.0),
+                    border: Border.all(color: Colors.white12, width: 0.5),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.3),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      )
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.5,
+                          valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF0A84FF)), // Azul Mac
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      const Text(
+                        'Optimizando miniaturas...',
+                        style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                      ),
+                      const SizedBox(width: 14),
+                      // 2. Escuchamos el porcentaje exacto
+                      ValueListenableBuilder<double>(
+                        valueListenable: _thumbnailService.progressNotifier,
+                        builder: (context, progress, child) {
+                          return Text(
+                            '${(progress * 100).toInt()}%',
+                            style: const TextStyle(
+                              color: Color(0xFF0A84FF), 
+                              fontSize: 13, 
+                              fontWeight: FontWeight.bold
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -5123,4 +5241,55 @@ class _TagManagementScreenState extends State<TagManagementScreen> {
       ),
     );
   }
+}
+
+void showGlassSnackBar(BuildContext context, String message, {IconData icon = Icons.check_circle_outline, Color iconColor = const Color(0xFF0A84FF)}) {
+  // Ocultamos la notificación anterior si es que había una en pantalla
+  ScaffoldMessenger.of(context).hideCurrentSnackBar();
+  
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      behavior: SnackBarBehavior.floating, // Le dice a Flutter que flote
+      backgroundColor: Colors.transparent, // Hacemos invisible el fondo nativo
+      elevation: 0, // Quitamos la sombra cuadrada
+      duration: const Duration(seconds: 5),
+      margin: const EdgeInsets.only(bottom: 40, left: 20, right: 20), // La elevamos un poco
+      content: Center( // Center evita que la píldora ocupe todo el ancho
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(20.0),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF252525).withOpacity(0.85),
+                borderRadius: BorderRadius.circular(20.0),
+                border: Border.all(color: Colors.white12, width: 0.5),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.3),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  )
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min, // Se ajusta al tamaño del texto
+                children: [
+                  Icon(icon, color: iconColor, size: 18),
+                  const SizedBox(width: 12),
+                  Flexible(
+                    child: Text(
+                      message,
+                      style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 }
