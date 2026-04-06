@@ -19,6 +19,7 @@ import 'package:local_notifier/local_notifier.dart';
 import 'dart:ui';
 import 'package:google_fonts/google_fonts.dart';
 import 'dart:ffi' hide Size;
+import 'ui_utils.dart';
 
 // Imports de los nuevos archivos
 import 'metadata_service.dart';
@@ -2773,8 +2774,9 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     // 1. Determinamos qué mostrar en la vista previa del arrastre
     Widget previewWidget;
     if (firstItem is File) {
-      final ext = p.extension(firstItem.path).toLowerCase();
-      final isVideo = ['.mp4', '.mov', '.avi', '.mkv'].contains(ext);
+      // ¡CORRECCIÓN AQUÍ!
+      // Usamos tu función para leer la extensión real encriptada en el nombre (.vtx)
+      final bool isVideo = _isVideo(firstItem.path);
 
       if (isVideo) {
         // Si es video, mostramos un ícono representativo
@@ -5274,55 +5276,4 @@ class _TagManagementScreenState extends State<TagManagementScreen> {
       ),
     );
   }
-}
-
-void showGlassSnackBar(BuildContext context, String message, {IconData icon = Icons.check_circle_outline, Color iconColor = const Color(0xFF0A84FF)}) {
-  // Ocultamos la notificación anterior si es que había una en pantalla
-  ScaffoldMessenger.of(context).hideCurrentSnackBar();
-  
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      behavior: SnackBarBehavior.floating, // Le dice a Flutter que flote
-      backgroundColor: Colors.transparent, // Hacemos invisible el fondo nativo
-      elevation: 0, // Quitamos la sombra cuadrada
-      duration: const Duration(seconds: 5),
-      margin: const EdgeInsets.only(bottom: 40, left: 20, right: 20), // La elevamos un poco
-      content: Center( // Center evita que la píldora ocupe todo el ancho
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(20.0),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-              decoration: BoxDecoration(
-                color: const Color(0xFF252525).withOpacity(0.85),
-                borderRadius: BorderRadius.circular(20.0),
-                border: Border.all(color: Colors.white12, width: 0.5),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.3),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
-                  )
-                ],
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min, // Se ajusta al tamaño del texto
-                children: [
-                  Icon(icon, color: iconColor, size: 18),
-                  const SizedBox(width: 12),
-                  Flexible(
-                    child: Text(
-                      message,
-                      style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    ),
-  );
 }

@@ -4,6 +4,7 @@ import 'metadata_service.dart';
 import 'package:flutter/rendering.dart';
 import 'dart:math' as math;
 import 'package:flutter/services.dart';
+import 'ui_utils.dart';
 
 class TagEditorDialog extends StatefulWidget {
   final List<String> imageIds;
@@ -26,6 +27,13 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
   Offset _dialogPosition = Offset.zero;
   final GlobalKey _dialogKey = GlobalKey();
   Size? _lastScreenSize;
+  
+  // NUEVO 1: Portapapeles estático de la app.
+  // Al ser 'static', recuerda las etiquetas copiadas entre diferentes diálogos
+  // pero ignora completamente el portapapeles de Windows/Mac.
+  static List<String> _appCopiedTags = [];
+  
+  String? _clipboardPreview;
 
   @override
   void dispose() {
@@ -43,6 +51,32 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
       final allTagsLists = widget.imageIds
           .map((id) => widget.metadataService.getMetadataForImage(id).tags.toSet());
       _currentTags = allTagsLists.reduce((a, b) => a.intersection(b));
+    }
+    
+    // Al abrir el diálogo, leemos nuestro portapapeles interno
+    _checkClipboardStatus();
+  }
+
+  // NUEVO 2: Función que formatea las primeras 8 etiquetas
+  void _checkClipboardStatus() {
+    if (_appCopiedTags.isNotEmpty) {
+      // Tomamos solo las primeras 8
+      final displayTags = _appCopiedTags.take(8).toList();
+      String preview = displayTags.join(', ');
+      
+      // Si había más de 8, agregamos el indicador
+      if (_appCopiedTags.length > 8) {
+        final extras = _appCopiedTags.length - 8;
+        preview += '... (+$extras)';
+      }
+      
+      if (mounted) {
+        setState(() {
+          _clipboardPreview = preview;
+        });
+      }
+    } else {
+      if (mounted) setState(() => _clipboardPreview = null);
     }
   }
 
@@ -65,7 +99,6 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
   }
 
   void _ensureWithinBounds() {
-    // Le pedimos a Flutter que espere a terminar de dibujar la nueva etiqueta
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       
@@ -76,15 +109,12 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
       final currentHeight = renderBox.size.height;
       const double dialogWidth = 340.0;
 
-      // Calculamos las paredes actuales y evitamos valores negativos con math.max
       final double dynamicMaxX = math.max(0.0, (screenSize.width - dialogWidth) / 2);
       final double dynamicMaxY = math.max(0.0, (screenSize.height - currentHeight) / 2);
 
-      // Verificamos si la posición actual se salió de estas nuevas paredes
       double fixedDx = _dialogPosition.dx.clamp(-dynamicMaxX, dynamicMaxX);
       double fixedDy = _dialogPosition.dy.clamp(-dynamicMaxY, dynamicMaxY);
 
-      // Si se salió, actualizamos la posición para "empujarla" adentro
       if (fixedDx != _dialogPosition.dx || fixedDy != _dialogPosition.dy) {
         setState(() {
           _dialogPosition = Offset(fixedDx, fixedDy);
@@ -93,40 +123,25 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
     });
   }
 
-  // --- NUEVO: FUNCIONES DE PORTAPAPELES ---
+  // NUEVO 3: Actualizamos la función de copiar
   Future<void> _copyTags() async {
     if (_currentTags.isEmpty) return;
     
-    // Convertimos la lista de etiquetas a texto: "paisaje, atardecer, playa"
+    _appCopiedTags = _currentTags.toList();
     final tagsString = _currentTags.join(', ');
     await Clipboard.setData(ClipboardData(text: tagsString));
     
+    _checkClipboardStatus();
+    
     if (mounted) {
-      // Mostramos un pequeño aviso flotante
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Etiquetas copiadas', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w500)),
-          backgroundColor: const Color(0xFF3A3A3C),
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-          duration: const Duration(seconds: 2),
-        ),
-      );
+      // INVOCAMOS LA UTILIDAD GLOBAL
+      showGlassSnackBar(context, 'Etiquetas copiadas', icon: Icons.copy);
     }
   }
-
-  Future<void> _pasteTags() async {
-    // Obtenemos el texto del portapapeles
-    final data = await Clipboard.getData(Clipboard.kTextPlain);
-    if (data != null && data.text != null) {
-      // Separamos por comas, limpiamos espacios vacíos y filtramos
-      final pastedTags = data.text!
-          .split(',')
-          .map((e) => e.trim())
-          .where((e) => e.isNotEmpty);
-          
-      // Usamos tu función existente _addTag para agregar cada una con toda su lógica
-      for (final tag in pastedTags) {
+  // NUEVO 4: Actualizamos la función de pegar para que use la memoria interna
+  void _pasteTags() {
+    if (_appCopiedTags.isNotEmpty) {
+      for (final tag in _appCopiedTags) {
         _addTag(tag); 
       }
     }
@@ -144,13 +159,10 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
 
   @override
   Widget build(BuildContext context) {
-    // 1. Obtenemos el tamaño de la pantalla
     final screenSize = MediaQuery.of(context).size;
-    
-    // 2. Definimos las nuevas dimensiones (más pequeñas)
     const double dialogWidth = 340.0; 
     if (_lastScreenSize != null && _lastScreenSize != screenSize) {
-      _ensureWithinBounds(); // Forzamos a que se meta a la ventana
+      _ensureWithinBounds(); 
     }
     _lastScreenSize = screenSize;
 
@@ -166,11 +178,10 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
             filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), 
             child: Container(
               key: _dialogKey,
-              width: dialogWidth, // Usamos la variable más pequeña
+              width: dialogWidth, 
               constraints: BoxConstraints(
                 maxHeight: math.max(200.0, screenSize.height - 40.0),
               ),
-
               padding: const EdgeInsets.only(left: 20, right: 20, bottom: 20, top: 0),
               decoration: BoxDecoration(
                 color: const Color(0xFF252525).withOpacity(0.65), 
@@ -180,36 +191,25 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  
-                  // --- CABECERA ARRASTRABLE CON PAREDES ---
                   MouseRegion(
                     cursor: SystemMouseCursors.move,
                     child: GestureDetector(
                       onPanUpdate: (details) {
                         setState(() {
-                          // 3. MEDIMOS EL TAMAÑO REAL EN ESTE INSTANTE
                           final RenderBox? renderBox = _dialogKey.currentContext?.findRenderObject() as RenderBox?;
-                          // Si por alguna razón no puede medirlo, usa 400.0 como salvavidas
                           final currentHeight = renderBox?.size.height ?? 400.0; 
-
-                          // 4. CALCULAMOS LAS PAREDES DINÁMICAS (Protegidas)
                           final double dynamicMaxX = math.max(0.0, (screenSize.width - dialogWidth) / 2);
                           final double dynamicMaxY = math.max(0.0, (screenSize.height - currentHeight) / 2);
-
-                          // 5. Calculamos el nuevo movimiento
                           double newDx = _dialogPosition.dx + details.delta.dx;
                           double newDy = _dialogPosition.dy + details.delta.dy;
-
-                          // 6. Aplicamos el choque (clamp) contra las paredes frescas
                           newDx = newDx.clamp(-dynamicMaxX, dynamicMaxX);
                           newDy = newDy.clamp(-dynamicMaxY, dynamicMaxY);
-
                           _dialogPosition = Offset(newDx, newDy);
                         });
                       },
                       child: Container(
                         width: double.infinity,
-                        padding: const EdgeInsets.only(top: 20, bottom: 10), // Más compacto
+                        padding: const EdgeInsets.only(top: 20, bottom: 10), 
                         color: Colors.transparent, 
                         child: Row(
                           children: [
@@ -226,173 +226,199 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
                             ),
                             IconButton(
                               icon: const Icon(Icons.copy, size: 18),
-                              color: Colors.white54,
-                              disabledColor: Colors.white24,
+                              // Si hay etiquetas actuales, brilla. Si no, se apaga.
+                              color: _currentTags.isNotEmpty ? Colors.white : Colors.white24,
                               tooltip: 'Copiar etiquetas',
                               padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(), // Quita el padding gigante por defecto
-                              onPressed: _currentTags.isEmpty ? null : _copyTags, // Se desactiva si no hay etiquetas
+                              constraints: const BoxConstraints(),
+                              // Desactiva el clic si no hay etiquetas
+                              onPressed: _currentTags.isEmpty ? null : _copyTags, 
                             ),
                             const SizedBox(width: 16),
+                            
+                            // NUEVO 5: Botón Pegar reactivo a nuestra variable estática
                             IconButton(
                               icon: const Icon(Icons.paste, size: 18),
-                              color: Colors.white54,
-                              tooltip: 'Pegar etiquetas',
+                              color: _clipboardPreview != null ? Colors.white : Colors.white24,
+                              tooltip: _clipboardPreview != null 
+                                  ? 'Pegar: $_clipboardPreview' 
+                                  : 'Portapapeles vacío',
                               padding: EdgeInsets.zero,
                               constraints: const BoxConstraints(),
-                              onPressed: _pasteTags,
+                              onPressed: _clipboardPreview != null ? _pasteTags : null,
                             ),
-                            const SizedBox(width: 4), // Margen final
+                            const SizedBox(width: 4), 
                           ],
                         ),
                       ),
                     ),
                   ),
                 
-                // --- Campo de texto estilo Buscador Mac ---
-                RawAutocomplete<String>(
-                  textEditingController: _typeAheadController,
-                  focusNode: _focusNode,
-                  optionsBuilder: (TextEditingValue textEditingValue) {
-                    final pattern = textEditingValue.text.trim().toLowerCase();
-                    if (pattern.isEmpty) return const Iterable<String>.empty();
-                    
-                    final allTags = widget.metadataService.getAllTags();
-                    return allTags.where((tag) => tag.toLowerCase().contains(pattern));
-                  },
-                  onSelected: (String suggestion) {
-                    _addTag(suggestion);
-                    _focusNode.requestFocus(); // Mantiene el cursor tras elegir con Enter
-                  },
-                  fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
-                    return TextField(
-                      controller: controller,
-                      focusNode: focusNode,
-                      autofocus: true,
-                      onSubmitted: (value) {
-                        // 1. Avisamos al Autocomplete que intente seleccionar la opción resaltada
-                        onFieldSubmitted(); 
+                  RawAutocomplete<String>(
+                    textEditingController: _typeAheadController,
+                    focusNode: _focusNode,
+                    optionsBuilder: (TextEditingValue textEditingValue) {
+                      final pattern = textEditingValue.text.trim().toLowerCase();
+                      if (pattern.isEmpty) return const Iterable<String>.empty();
+                      
+                      final allTags = widget.metadataService.getAllTags();
+                      
+                      // 1. Filtramos las etiquetas que coinciden con la búsqueda (contienen el texto)
+                      final filteredTags = allTags
+                          .where((tag) => tag.toLowerCase().contains(pattern))
+                          .toList();
+                          
+                      // 2. Ordenamiento inteligente (Ponderado + Alfabético)
+                      filteredTags.sort((a, b) {
+                        final aLower = a.toLowerCase();
+                        final bLower = b.toLowerCase();
                         
-                        // 2. Si no había ninguna opción resaltada, el texto se mantiene. 
-                        // Lo procesamos como una etiqueta nueva.
-                        Future.microtask(() {
-                          if (controller.text.isNotEmpty) {
-                            _addTag(controller.text);
-                            focusNode.requestFocus();
-                          }
-                        });
-                      },
-                      style: const TextStyle(color: Colors.white),
-                      decoration: InputDecoration(
-                        filled: true,
-                        fillColor: const Color(0xFF1C1C1E).withOpacity(0.8), 
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide.none,
-                        ),
-                        hintText: 'Añadir etiqueta...',
-                        hintStyle: const TextStyle(color: Colors.white54),
-                      ),
-                    );
-                  },
-                  optionsViewBuilder: (context, onSelected, options) {
-                    return Align(
-                      alignment: Alignment.topLeft,
-                      child: Container(
-                        width: 300, // Ancho del menú de sugerencias
-                        margin: const EdgeInsets.only(top: 8),
-                        child: Material(
-                          color: const Color(0xFF252525), 
-                          elevation: 8,
-                          shadowColor: Colors.black.withOpacity(0.5),
-                          shape: RoundedRectangleBorder(
+                        final aStarts = aLower.startsWith(pattern);
+                        final bStarts = bLower.startsWith(pattern);
+                        
+                        // Si 'a' empieza con el texto y 'b' no, 'a' va primero
+                        if (aStarts && !bStarts) {
+                          return -1;
+                        } 
+                        // Si 'b' empieza con el texto y 'a' no, 'b' va primero
+                        else if (!aStarts && bStarts) {
+                          return 1;
+                        } 
+                        // Si ambas empiezan con el texto, o ninguna empieza con el texto, orden alfabético normal
+                        else {
+                          return aLower.compareTo(bLower);
+                        }
+                      });
+                      
+                      return filteredTags;
+                    },
+                    onSelected: (String suggestion) {
+                      _addTag(suggestion);
+                      Future.microtask(() {
+                        _typeAheadController.clear();
+                      });
+                      _focusNode.requestFocus(); 
+                    },
+                    fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+                      return TextField(
+                        controller: controller,
+                        focusNode: focusNode,
+                        autofocus: true,
+                        onSubmitted: (value) {
+                          onFieldSubmitted(); 
+                          Future.microtask(() {
+                            if (controller.text.isNotEmpty) {
+                              _addTag(controller.text);
+                              focusNode.requestFocus();
+                            }
+                          });
+                        },
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          filled: true,
+                          fillColor: const Color(0xFF1C1C1E).withOpacity(0.8), 
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(8),
-                            side: const BorderSide(color: Colors.white12, width: 0.5),
+                            borderSide: BorderSide.none,
                           ),
-                          clipBehavior: Clip.antiAlias,
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxHeight: 200),
-                            child: ListView.builder(
-                              padding: EdgeInsets.zero,
-                              shrinkWrap: true,
-                              itemCount: options.length,
-                              itemBuilder: (context, index) {
-                                final option = options.elementAt(index);
-                                
-                                return Builder(
-                                  builder: (BuildContext context) {
-                                    final bool isHighlighted = AutocompleteHighlightedOption.of(context) == index;
-                                    
-                                    // 3. Envolvemos el elemento en el Vigía de Scroll
-                                    return _ScrollToVisible(
-                                      isHighlighted: isHighlighted,
-                                      child: InkWell(
-                                        onTap: () => onSelected(option),
-                                        hoverColor: Colors.white.withOpacity(0.08), 
-                                        child: Container(
-                                          color: isHighlighted 
-                                              ? const Color(0xFF0A84FF).withOpacity(0.3) 
-                                              : null,
-                                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                                          child: Text(option, style: const TextStyle(color: Colors.white)),
+                          hintText: 'Añadir etiqueta...',
+                          hintStyle: const TextStyle(color: Colors.white54),
+                        ),
+                      );
+                    },
+                    optionsViewBuilder: (context, onSelected, options) {
+                      return Align(
+                        alignment: Alignment.topLeft,
+                        child: Container(
+                          width: 300, 
+                          margin: const EdgeInsets.only(top: 8),
+                          child: Material(
+                            color: const Color(0xFF252525), 
+                            elevation: 8,
+                            shadowColor: Colors.black.withOpacity(0.5),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              side: const BorderSide(color: Colors.white12, width: 0.5),
+                            ),
+                            clipBehavior: Clip.antiAlias,
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(maxHeight: 200),
+                              child: ListView.builder(
+                                padding: EdgeInsets.zero,
+                                shrinkWrap: true,
+                                itemCount: options.length,
+                                itemBuilder: (context, index) {
+                                  final option = options.elementAt(index);
+                                  return Builder(
+                                    builder: (BuildContext context) {
+                                      final bool isHighlighted = AutocompleteHighlightedOption.of(context) == index;
+                                      return _ScrollToVisible(
+                                        isHighlighted: isHighlighted,
+                                        child: InkWell(
+                                          onTap: () => onSelected(option),
+                                          hoverColor: Colors.white.withOpacity(0.08), 
+                                          child: Container(
+                                            color: isHighlighted 
+                                                ? const Color(0xFF0A84FF).withOpacity(0.3) 
+                                                : null,
+                                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                                            child: Text(option, style: const TextStyle(color: Colors.white)),
+                                          ),
                                         ),
-                                      ),
-                                    );
-                                  }
-                                );
-                              },
+                                      );
+                                    }
+                                  );
+                                },
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                    );
-                  },
-                ),
-                const SizedBox(height: 16),
-                
-                // --- Lista de etiquetas actuales (Chips estilo píldora) ---
-                Flexible(
-                    child: SingleChildScrollView(
-                      physics: const BouncingScrollPhysics(), 
-                      child: Padding(
-                        padding: const EdgeInsets.only(bottom: 8.0), // Pequeño respiro al final del scroll
-                        child: _currentTags.isEmpty
-                          ? const Text('No hay etiquetas asignadas.', style: TextStyle(color: Colors.white54))
-                          : Wrap(
-                              spacing: 8.0,
-                              runSpacing: 8.0,
-                              children: _currentTags.map((tag) {
-                                return Chip(
-                                  label: Text(tag, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.white)),
-                                  backgroundColor: const Color(0xFF3A3A3C).withOpacity(0.8),
-                                  side: BorderSide.none,
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
-                                  deleteIcon: const Icon(Icons.cancel, size: 16, color: Colors.white54),
-                                  onDeleted: () => _removeTag(tag),
-                                );
-                              }).toList(),
-                            ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  Flexible(
+                      child: SingleChildScrollView(
+                        physics: const BouncingScrollPhysics(), 
+                        child: Padding(
+                          padding: const EdgeInsets.only(bottom: 8.0), 
+                          child: _currentTags.isEmpty
+                            ? const Text('No hay etiquetas asignadas.', style: TextStyle(color: Colors.white54))
+                            : Wrap(
+                                spacing: 8.0,
+                                runSpacing: 8.0,
+                                children: _currentTags.map((tag) {
+                                  return Chip(
+                                    label: Text(tag, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.white)),
+                                    backgroundColor: const Color(0xFF3A3A3C).withOpacity(0.8),
+                                    side: BorderSide.none,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
+                                    deleteIcon: const Icon(Icons.cancel, size: 16, color: Colors.white54),
+                                    onDeleted: () => _removeTag(tag),
+                                  );
+                                }).toList(),
+                              ),
+                        ),
                       ),
                     ),
+                  const SizedBox(height: 24),
+                  
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      style: TextButton.styleFrom(foregroundColor: const Color(0xFF0A84FF)), 
+                      child: const Text('Cerrar', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                    ),
                   ),
-                const SizedBox(height: 24),
-                
-                // --- Botón de Cerrar estilo Cupertino ---
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    style: TextButton.styleFrom(foregroundColor: const Color(0xFF0A84FF)), // Azul Mac
-                    child: const Text('Cerrar', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
-      ),
       )
     );
   }

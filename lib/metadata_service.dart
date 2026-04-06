@@ -18,6 +18,14 @@ class ImageMetadata {
 }
 
 class MetadataService {
+  // --- INICIO PATRÓN SINGLETON ---
+  // Esto asegura que todas las carpetas y subcarpetas compartan 
+  // exactamente la misma memoria y base de datos de etiquetas.
+  static final MetadataService _instance = MetadataService._internal();
+  factory MetadataService() => _instance;
+  MetadataService._internal();
+  // --- FIN PATRÓN SINGLETON ---
+
   final Map<String, ImageMetadata> _imageData = {};
   List<String> _allTags = [];
   bool _isInitialized = false;
@@ -37,7 +45,7 @@ class MetadataService {
           CREATE TABLE metadata (
             image_id TEXT PRIMARY KEY,
             tags TEXT,
-            rating INTEGER
+            rating INTEGER,
             added_timestamp INTEGER
           )
         ''');
@@ -245,4 +253,3 @@ class MetadataService {
     return count;
   }
 }
-
