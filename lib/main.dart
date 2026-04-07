@@ -20,6 +20,7 @@ import 'dart:ui';
 import 'package:google_fonts/google_fonts.dart';
 import 'dart:ffi' hide Size;
 import 'ui_utils.dart';
+import 'package:desktop_scrollbar/desktop_scrollbar.dart';
 
 // Imports de los nuevos archivos
 import 'metadata_service.dart';
@@ -38,9 +39,12 @@ const String _sortCriteriaKey = 'sort_criteria';
 const String _sortAscendingKey = 'sort_ascending';
 const String _showRatingsKey = 'show_ratings_thumbnail';
 const String _showTagsKey = 'show_tags_thumbnail';
+const String _notificationDelayKey = 'notification_delay';
+const String _autoHideTimeoutKey = 'auto_hide_timeout';
 
 final GlobalKey<_VaultExplorerScreenState> _mainVaultKey = GlobalKey<_VaultExplorerScreenState>();
 final ValueNotifier<bool> appVisibilityNotifier = ValueNotifier<bool>(true);
+final ValueNotifier<int> autoHideNotifier = ValueNotifier<int>(5);
 
 enum SortCriteria { date, name, size }
 
@@ -252,6 +256,7 @@ class AuthWrapper extends StatefulWidget {
 class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayListener {
   bool _isAuthenticated = false;
   late bool _isWindowVisible;
+  Timer? _inactivityTimer;
 
   @override
   void initState() {
@@ -260,13 +265,49 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
     windowManager.addListener(this);
     trayManager.addListener(this);
     _initTray();
+    // Escuchar el teclado a nivel global (Hardware)
+    HardwareKeyboard.instance.addHandler(_handleKeyEvent);
+    // Escuchar cambios en los ajustes de inactividad
+    autoHideNotifier.addListener(_resetInactivityTimer); 
+    _loadInitialSettings();
   }
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
+    autoHideNotifier.removeListener(_resetInactivityTimer);
+    _inactivityTimer?.cancel();
     windowManager.removeListener(this);
     trayManager.removeListener(this);
     super.dispose();
+  }
+
+  Future<void> _loadInitialSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    autoHideNotifier.value = prefs.getInt(_autoHideTimeoutKey) ?? 5; // 5 minutos por defecto
+    _resetInactivityTimer();
+  }
+  // Intercepta cualquier tecla presionada sin bloquearla
+  bool _handleKeyEvent(KeyEvent event) {
+    _resetInactivityTimer();
+    return false; 
+  }
+  void _resetInactivityTimer() {
+    _inactivityTimer?.cancel();
+    // Solo activamos la bomba de tiempo si la app es visible, está desbloqueada y el ajuste es mayor a 0
+    if (autoHideNotifier.value > 0 && _isWindowVisible && _isAuthenticated) {
+      _inactivityTimer = Timer(Duration(seconds: autoHideNotifier.value), _autoHideApp);
+    }
+  }
+  void _autoHideApp() {
+    if (_isWindowVisible) {
+      appVisibilityNotifier.value = false; // Duerme las carpetas
+      setState(() {
+        _isWindowVisible = false;
+        _isAuthenticated = false; // Exigir PIN al volver
+      });
+      windowManager.hide(); // Ocultar a la bandeja
+    }
   }
 
   Future<void> _initTray() async {
@@ -346,7 +387,15 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
         // 1. APLICACIÓN PRINCIPAL (Congelada si no hay PIN o ventana)
         Offstage(
           offstage: !_isWindowVisible || !_isAuthenticated,
-          child: widget.navigatorChild, 
+          // NUEVO: Listener captura todo movimiento o clic de ratón/trackpad
+          child: Listener(
+            behavior: HitTestBehavior.translucent,
+            onPointerDown: (_) => _resetInactivityTimer(),
+            onPointerMove: (_) => _resetInactivityTimer(),
+            onPointerHover: (_) => _resetInactivityTimer(),
+            onPointerSignal: (_) => _resetInactivityTimer(), // Para la rueda de scroll
+            child: widget.navigatorChild, 
+          ),
         ),
 
         // 2. ESCUDOS
@@ -361,11 +410,13 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
                     setState(() {
                       _isAuthenticated = true;
                     });
+                    _resetInactivityTimer();
                   },
                   setAuthenticated: (value) {
                     setState(() {
                       _isAuthenticated = value;
                     });
+                    if (value) _resetInactivityTimer();
                   },
                 ),
               ),
@@ -909,8 +960,15 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   Future<bool> _waitUntilFileIsReady(File file) async {
     int lastSize = -1;
     int stableCount = 0;
+    
+    // NUEVO: Variables para evitar bucles infinitos
+    int attempts = 0; 
+    // 7200 intentos * 500ms = 1 hora de espera máxima.
+    // Si una descarga se pausa por más de 1 hora, la ignoramos.
+    const int maxAttempts = 7200; 
 
-    while (true) {
+    while (attempts < maxAttempts) {
+      attempts++;
       try {
         if (!await file.exists()) {
           return false; // El archivo fue borrado o la descarga se canceló
@@ -922,13 +980,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         if (currentSize == lastSize && currentSize > 0) {
           stableCount++;
           // AUMENTAMOS LA EXIGENCIA: 6 comprobaciones (3 segundos estables)
-          // Esto evita que las pausas de internet engañen a la app.
           if (stableCount >= 6) {
             RandomAccessFile? raf;
             try {
               raf = await file.open(mode: FileMode.append);
               await raf.close();
-              return true; // ¡100% listo!
+              return true; // ¡100% listo y liberado por Windows!
             } catch (e) {
               stableCount = 0; // Aún bloqueado por el navegador
             }
@@ -943,6 +1000,9 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
       await Future.delayed(const Duration(milliseconds: 500));
     }
+    
+    // NUEVO: Si llega aquí, la descarga se atascó o se pausó demasiado tiempo.
+    return false;
   }
 
   void _startWatcher(String path) {
@@ -1076,24 +1136,37 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
 
   Future<void> _moveFileRobustly(File sourceFile, String newPath) async {
-    int retries = 4; // Le damos 4 intentos si el motor cwebp lo tiene ocupado
+    int retries = 4; // Le damos 4 intentos si algún proceso lo tiene ocupado
     while (retries > 0) {
       try {
         await sourceFile.rename(newPath);
-        return; // ¡Éxito a la primera!
+        return; // ¡Éxito a la primera usando el motor nativo del disco!
       } catch (e) {
         try {
+          // Fallback manual: Copiar y borrar
           final newFile = await sourceFile.copy(newPath);
           if (await newFile.exists()) {
-            await sourceFile.delete();
-            return; // ¡Éxito copiando y borrando!
+            
+            // --- NUEVO: PRUEBA DE INTEGRIDAD DE BYTES ---
+            final sourceSize = await sourceFile.length();
+            final newSize = await newFile.length();
+            
+            if (sourceSize == newSize) {
+              // Son clones perfectos, es seguro borrar el original
+              await sourceFile.delete();
+              return; 
+            } else {
+              // La copia se interrumpió a medias (ej. falta de espacio en disco)
+              await newFile.delete(); // Borramos la copia corrupta
+              throw Exception("La copia falló la prueba de integridad (tañamos diferentes).");
+            }
           }
         } catch (copyDeleteError) {
           retries--;
           if (retries == 0) {
             // Si falló definitivamente, borramos la copia a medias para no dejar basura
             if (await File(newPath).exists()) await File(newPath).delete();
-            throw Exception("El archivo está bloqueado por Windows: $copyDeleteError");
+            throw Exception("El archivo está bloqueado o dañado: $copyDeleteError");
           }
           // Esperamos un cuarto de segundo a que se libere antes de volver a intentar
           await Future.delayed(const Duration(milliseconds: 250));
@@ -1127,18 +1200,18 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         _backgroundAbsorbedCount++;
         _notificationTimer?.cancel();
 
-        _notificationTimer = Timer(const Duration(seconds: 3), () async {
-          final prefs = await SharedPreferences.getInstance();
+        // 1. Leemos los segundos configurados por el usuario (8 por defecto)
+        final prefs = await SharedPreferences.getInstance();
+        final delaySeconds = prefs.getInt(_notificationDelayKey) ?? 8;
+
+        // 2. Usamos esa variable dinámica para el Timer
+        _notificationTimer = Timer(Duration(seconds: delaySeconds), () async {
           final showNotif = prefs.getBool(_showNotificationsKey) ?? true;
 
           if (showNotif && _backgroundAbsorbedCount > 0) {
-            // 1. Armamos y "congelamos" el texto exacto ANTES de tocar el contador
             final String mensaje = "Se han enviado $_backgroundAbsorbedCount archivo(s) a la bóveda.";
-            
-            // 2. Ahora sí, vaciamos el contador de forma segura
             _backgroundAbsorbedCount = 0;
 
-            // 3. Mandamos la alerta a Windows usando el texto congelado
             final notification = LocalNotification(
               identifier: 'gvortex_absorb_notif', 
               title: "GVortex",
@@ -1147,11 +1220,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             await notification.show();
           }
         });
-      }
-      if (p.equals(_currentVaultDir.path, _vaultRootDir.path)) {
-        if (reloadUI && !_isPaused) {
-          await _loadVaultContents(quiet: true);
-        }
+      } else if (reloadUI) {
+        await _loadVaultContents(quiet: true);
       }
     } catch (e) {
       debugPrint("Error al absorber ${imageFile.path}: $e");
@@ -1643,11 +1713,18 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       });
     }
 
-    // NUEVO: Esperamos a que la pantalla completa se cierre y nos devuelva el índice
+    // NUEVO: Transición personalizada sin Hero
     final returnedIndex = await Navigator.push<int>(
       context,
-      MaterialPageRoute(
-        builder: (context) => FullScreenImageViewer(
+      PageRouteBuilder(
+        // Duración de la animación (300ms es el estándar fluido)
+        transitionDuration: const Duration(milliseconds: 300),
+        reverseTransitionDuration: const Duration(milliseconds: 300),
+        // Color de fondo oscuro mientras hace la transición
+        opaque: false, 
+        barrierColor: Colors.black, 
+        
+        pageBuilder: (context, animation, secondaryAnimation) => FullScreenImageViewer(
           imageFiles: imageFiles,
           initialIndex: initialIndex,
           exportCallback: (file) async => await _handleSingleExport(file),
@@ -1665,11 +1742,31 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                 _selectedItems = {lastViewedFile};
                 _shiftSelectionAnchorIndex = indexInVault;
               });
-              // Movemos la cuadrícula oculta sin animación para estar listos
               _scrollToFocusedItem(animate: false);
             }
           },
         ),
+        
+        // AQUÍ DEFINIMOS LA MAGIA DE LA ANIMACIÓN
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          // 1. Efecto de opacidad (Fade in)
+          final fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+            CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+          );
+
+          // 2. Efecto de acercamiento (Zoom in desde 80% al 100%)
+          final scaleAnimation = Tween<double>(begin: 0.8, end: 1.0).animate(
+            CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+          );
+
+          return FadeTransition(
+            opacity: fadeAnimation,
+            child: ScaleTransition(
+              scale: scaleAnimation,
+              child: child,
+            ),
+          );
+        },
       ),
     );
 
@@ -1866,6 +1963,21 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
   // --- Marquee Selection Handlers ---
   void _onMarqueeStart(DragStartDetails details) {
+    // 1. Obtenemos el tamaño real y exacto del contenedor de la cuadrícula
+    final RenderBox? gridBox = _gridDetectorKey.currentContext?.findRenderObject() as RenderBox?;
+    
+    if (gridBox != null) {
+      // 2. El tamaño exacto de tu barra: 12.0 (thickness) + 4.0 (crossAxisMargin) = 16.0
+      // Si cambias el grosor de tu barra en el futuro, solo ajustas este valor.
+      const double scrollbarRealWidth = 12.0; 
+      
+      // 3. Verificamos si el clic cayó exactamente dentro de la franja de la barra
+      if (details.localPosition.dx > gridBox.size.width - scrollbarRealWidth) {
+        _marqueeStart = null;
+        return; // Ignoramos el Marquee, la barra gana el clic
+      }
+    }
+
     _hideContextMenu();
     _marqueeStart = details.localPosition;
     _marqueeRect = null;
@@ -2808,17 +2920,32 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               autofocus: true,
               onKeyEvent: (FocusNode node, KeyEvent event) {
                 if (event.logicalKey == LogicalKeyboardKey.tab) {
-                  // Le decimos a Flutter "Ya me encargué de esta tecla, no hagas nada más"
                   return KeyEventResult.handled; 
                 }
-                // Para cualquier otra tecla, dejamos que Flutter haga su trabajo normal
                 return KeyEventResult.ignored;
               },
-              child: Scrollbar(
-                controller: _scrollController,
-                thumbVisibility: true,
-                child: TweenAnimationBuilder<double>(
-                  tween: Tween<double>(
+              // 1. Apagamos la barra duplicada de Flutter
+              child: ScrollConfiguration(
+                behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+                child: DesktopScrollbar( // O RawScrollbar
+                  controller: _scrollController,
+                  thumbVisibility: true,
+                  trackVisibility: true,
+                  
+                  // --- DISEÑO PÍLDORA PEGADA AL BORDE ---
+                  thickness: 10.0, // Define el grosor IGUAL para la barra y el carril
+                  radius: const Radius.circular(20.0), // Mantiene las puntas de píldora
+                  crossAxisMargin: 0.0, // <-- Cero margen: la pega totalmente al lateral
+                  mainAxisMargin: 0.0, // Mantiene el margen arriba y abajo para que no choque con los topes
+                  
+                  // --- COLORES ---
+                  thumbColor: Colors.white.withOpacity(0.4), 
+                  trackColor: Colors.white.withOpacity(0.05), 
+                  trackBorderColor: Colors.transparent, // Quita el borde del carril para que se vea limpio
+                  
+                  minThumbLength: 50.0,
+                  child: TweenAnimationBuilder<double>(
+                    tween: Tween<double>(
                     begin: 8.0, // Valor inicial por defecto
                     end: _isSearchVisible
                         ? 70.0
@@ -2863,6 +2990,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               ),
             ),
           ),
+          )
         );
       },
     );
@@ -3872,142 +4000,97 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
     return GestureDetector(
       onTap: widget.onTap,
       onSecondaryTapUp: widget.onSecondaryTapUp,
-      child: Hero(
-        tag: widget.imageFile.path,
-        placeholderBuilder: (context, heroSize, child) {
-          // Esto obliga a la cuadrícula a seguir mostrando la miniatura
-          // intacta, eliminando el parpadeo negro por completo.
-          return child;
-        },
-        child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8.0),
-            border: Border.all(
-              color: widget.isSelected
-                  ? const Color(0xFF0A84FF)
-                  : Colors.transparent,
-              width: 2.5, // Borde de selección limpio
-            ),
-            // Sombra sutil para dar relieve a las imágenes
-            boxShadow: [
-              if (!widget.isSelected)
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.3),
-                  blurRadius: 4,
-                  offset: const Offset(0, 2),
-                )
-            ],
+      // 1. EL HERO YA NO ESTÁ AQUÍ AFUERA
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8.0),
+          border: Border.all(
+            color: widget.isSelected ? const Color(0xFF0A84FF) : Colors.transparent,
+            width: 2.5, 
           ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(6.0),
-            child: _thumbFile == null
-                ? Container(
-                    color: Colors.grey.shade800,
-                    child: const Center(
-                      child: SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: CircularProgressIndicator(strokeWidth: 2.0)),
-                    ),
-                  )
-                : Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      Image.file(
-                        _thumbFile!,
-                        fit: BoxFit.cover,
-                        errorBuilder: (context, error, stackTrace) {
-                          return Container(
-                            color: Colors.grey.shade900,
-                            child: const Center(
-                              child: Icon(Icons.broken_image,
-                                  color: Colors.white54, size: 40),
-                            ),
-                          );
-                        },
-                        gaplessPlayback: true,
-                      ),
-
-                      // 2. CAPA DEL BOTÓN DE PLAY (Solo si es video)
-                      if (isVideo) ...[
-                        Container(
-                            color: Colors
-                                .black26), // Oscurece un poco la miniatura
-                        const Center(
-                          child: Icon(
-                            Icons.play_circle_fill,
-                            color: Colors.white,
-                            size: 48,
-                          ),
-                        ),
-                      ],
-
-                      // 3. Sombreado inferior
-                      Positioned(
-                        bottom: 0,
-                        left: 0,
-                        right: 0,
-                        height: widget.extent * 0.35,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.bottomCenter,
-                              end: Alignment.topCenter,
-                              colors: [
-                                Colors.black.withOpacity(0.8),
-                                Colors.transparent,
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-
-                      // 4. Estrellas (Lado derecho)
-                      if (widget.showRatings && rating > 0)
-                        Positioned(
-                          bottom: 4,
-                          right: 4,
-                          child: RatingStarsDisplay(
-                            rating: rating,
-                            iconSize: widget.extent / 10,
-                          ),
-                        ),
-
-                      // 5. NUEVO: Contador de Etiquetas (Lado izquierdo)
-                      if (widget.showTagsCount && tagsCount > 0)
-                        Positioned(
-                          bottom: 4,
-                          left: 4,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 5.0, vertical: 2.0),
-                            decoration: BoxDecoration(
-                              color: Colors.black
-                                  .withOpacity(0.6), // Fondo oscuro sutil
-                              borderRadius: BorderRadius.circular(4.0),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.label_outline,
-                                    size: widget.extent / 12,
-                                    color: Colors.white70),
-                                const SizedBox(width: 3),
-                                Text(
-                                  '$tagsCount',
-                                  style: TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: widget.extent / 12,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                    ],
+          boxShadow: [
+            if (!widget.isSelected)
+              BoxShadow(
+                color: Colors.black.withOpacity(0.3),
+                blurRadius: 4,
+                offset: const Offset(0, 2),
+              )
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(6.0),
+          child: _thumbFile == null
+              ? Container(
+                  color: Colors.grey.shade800,
+                  child: const Center(
+                    child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2.0)),
                   ),
-          ),
+                )
+              : Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    
+                    Image.file(
+                      _thumbFile!,
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) {
+                        return Container(
+                          color: Colors.grey.shade900,
+                          child: const Center(child: Icon(Icons.broken_image, color: Colors.white54, size: 40)),
+                        );
+                      },
+                      gaplessPlayback: true,
+                    ),
+
+                    // CAPA DEL BOTÓN DE PLAY (Solo si es video)
+                    if (isVideo) ...[
+                      Container(color: Colors.black26), 
+                      const Center(child: Icon(Icons.play_circle_fill, color: Colors.white, size: 48)),
+                    ],
+
+                    // Sombreado inferior
+                    Positioned(
+                      bottom: 0, left: 0, right: 0,
+                      height: widget.extent * 0.35,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.bottomCenter, end: Alignment.topCenter,
+                            colors: [Colors.black.withOpacity(0.8), Colors.transparent],
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    // Estrellas
+                    if (widget.showRatings && rating > 0)
+                      Positioned(
+                        bottom: 4, right: 4,
+                        child: RatingStarsDisplay(rating: rating, iconSize: widget.extent / 10),
+                      ),
+
+                    // Contador de Etiquetas
+                    if (widget.showTagsCount && tagsCount > 0)
+                      Positioned(
+                        bottom: 4, left: 4,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5.0, vertical: 2.0),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.6), 
+                            borderRadius: BorderRadius.circular(4.0),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.label_outline, size: widget.extent / 12, color: Colors.white70),
+                              const SizedBox(width: 3),
+                              Text('$tagsCount', style: TextStyle(color: Colors.white70, fontSize: widget.extent / 12, fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
         ),
       ),
     );
@@ -4449,32 +4532,23 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                     
                     return GestureDetector(
                       onTap: () => _wakeUpUI(toggle: true),
-                      child: Hero(
-                        // LA SOLUCIÓN: Si es la imagen central usa el tag real. 
-                        // Si es una imagen adyacente, alteramos el tag para que Flutter no intente animarla.
-                        tag: isCurrentPage ? imageFile.path : '${imageFile.path}_disabled_$index',
-                        child: InteractiveViewer(
-                          // 3. Solo permitimos paneo/zoom en la imagen central
-                          panEnabled: isCurrentPage, 
-                          minScale: 1.0,
-                          maxScale: 4.0,
-                          child: isCurrentPage 
-                            // 4A. IMAGEN CENTRAL: Se carga con toda su gloria y resolución original
-                            ? Image.file(
-                                imageFile, 
-                                fit: BoxFit.contain,
-                                // gaplessPlayback es crucial. Evita que la pantalla parpadee en 
-                                // negro mientras se cambia de la versión de baja a alta resolución.
-                                gaplessPlayback: true, 
-                              )
-                            // 4B. IMÁGENES LATERALES: Se cargan ligeras (consumiendo ~5MB en lugar de ~100MB)
-                            : Image.file(
-                                imageFile, 
-                                fit: BoxFit.contain,
-                                cacheWidth: lowResWidth, 
-                                gaplessPlayback: true,
-                              ),
-                        ),
+                      child: InteractiveViewer(
+                        panEnabled: isCurrentPage, 
+                        minScale: 1.0,
+                        maxScale: 4.0,
+                        // ¡ADIÓS HERO! Simplemente devolvemos la imagen directamente.
+                        child: isCurrentPage 
+                          ? Image.file(
+                              imageFile, 
+                              fit: BoxFit.contain,
+                              gaplessPlayback: true, 
+                            )
+                          : Image.file(
+                              imageFile, 
+                              fit: BoxFit.contain,
+                              cacheWidth: lowResWidth, 
+                              gaplessPlayback: true,
+                            ),
                       ),
                     );
                       
@@ -4866,7 +4940,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   CloseAction _closeAction = CloseAction.minimize;
   bool _startup = false;
   bool _showNotifications = true;
+  int _notificationDelay = 8;
+  int _autoHideSeconds = 300;
   bool _isLoading = true;
+  bool _showRatings = true;
+  bool _showTags = true;
 
   @override
   void initState() {
@@ -4874,15 +4952,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadSettings();
   }
 
-  bool _showRatings = true;
-  bool _showTags = true;
-
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
-    final closeActionName =
-        prefs.getString(_closeActionKey) ?? CloseAction.minimize.name;
+    final closeActionName = prefs.getString(_closeActionKey) ?? CloseAction.minimize.name;
     final startup = await launchAtStartup.isEnabled();
     final showNotif = prefs.getBool(_showNotificationsKey) ?? true;
+    final notifDelay = prefs.getInt(_notificationDelayKey) ?? 8;
+    final autoHide = prefs.getInt(_autoHideTimeoutKey) ?? 300;
 
     if (mounted) {
       setState(() {
@@ -4892,11 +4968,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
         _startup = startup;
         _showNotifications = showNotif;
+        _notificationDelay = notifDelay;
+        _autoHideSeconds = autoHide;
+        autoHideNotifier.value = autoHide;
         _showRatings = prefs.getBool(_showRatingsKey) ?? true;
         _showTags = prefs.getBool(_showTagsKey) ?? true;
         _isLoading = false;
       });
     }
+  }
+
+  Future<void> _setNotificationDelay(double value) async {
+    setState(() => _notificationDelay = value.toInt());
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_notificationDelayKey, value.toInt());
+  }
+
+  Future<void> _setAutoHide(int? value) async {
+    if (value == null) return;
+    setState(() => _autoHideSeconds = value);
+    autoHideNotifier.value = value; // Sincroniza al instante con el AuthWrapper
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_autoHideTimeoutKey, value);
   }
 
   Future<void> _setShowRatings(bool value) async {
@@ -5003,8 +5096,44 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
 
                 const SizedBox(height: 24),
-
                 // TÍTULO DE SECCIÓN 2
+                const Padding(
+                  padding: EdgeInsets.only(left: 16, bottom: 8, top: 8),
+                  child: Text('SEGURIDAD', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                ),
+                Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1C1C1E),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: ListTile(
+                    leading: const Icon(Icons.lock_clock, color: Color(0xFF0A84FF)),
+                    title: const Text('Bloqueo por inactividad', style: TextStyle(fontSize: 13)),
+                    subtitle: const Text('Ocultar en la bandeja si no hay interacción', style: TextStyle(fontSize: 11, color: Colors.white54)),
+                    trailing: DropdownButton<int>(
+                      value: _autoHideSeconds, // <-- NUEVA VARIABLE
+                      dropdownColor: const Color(0xFF2C2C2E),
+                      underline: const SizedBox(),
+                      style: const TextStyle(color: Color(0xFF0A84FF), fontSize: 13, fontWeight: FontWeight.w500),
+                      icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF0A84FF)),
+                      items: const [
+                        DropdownMenuItem(value: 0, child: Text('Desactivado')),
+                        DropdownMenuItem(value: 30, child: Text('30 segundos')),
+                        DropdownMenuItem(value: 60, child: Text('1 minuto')),
+                        DropdownMenuItem(value: 120, child: Text('2 minutos')),
+                        DropdownMenuItem(value: 180, child: Text('3 minutos')),
+                        DropdownMenuItem(value: 300, child: Text('5 minutos')),
+                        DropdownMenuItem(value: 600, child: Text('10 minutos')),
+                        DropdownMenuItem(value: 1800, child: Text('30 minutos')),
+                        DropdownMenuItem(value: 3600, child: Text('1 hora')),
+                      ],
+                      onChanged: _setAutoHide,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+
+                // TÍTULO DE SECCIÓN 3
                 const Padding(
                   padding: EdgeInsets.only(left: 16, bottom: 8),
                   child: Text('SISTEMA Y NOTIFICACIONES',
@@ -5036,6 +5165,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         onChanged: _setShowNotifications,
                         activeColor: const Color(0xFF32D74B),
                       ),
+                      if (_showNotifications) ...[
+                        const Divider(height: 1, indent: 16, color: Colors.white12),
+                        Padding(
+                          padding: const EdgeInsets.only(left: 16.0, right: 16.0, top: 4.0, bottom: 12.0),
+                          child: Row(
+                            children: [
+                              const Text('Agrupar notificaciones:', style: TextStyle(fontSize: 13)),
+                              Expanded(
+                                child: Slider(
+                                  value: _notificationDelay.toDouble(),
+                                  min: 1,
+                                  max: 30, // Máximo 30 segundos
+                                  divisions: 29,
+                                  label: '$_notificationDelay seg',
+                                  activeColor: const Color(0xFF0A84FF), // Azul estilo Mac
+                                  inactiveColor: Colors.white24,
+                                  onChanged: _setNotificationDelay,
+                                ),
+                              ),
+                              SizedBox(
+                                width: 35,
+                                child: Text('$_notificationDelay s', 
+                                  style: const TextStyle(fontSize: 13, color: Colors.white70),
+                                  textAlign: TextAlign.right,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
