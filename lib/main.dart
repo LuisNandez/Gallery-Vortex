@@ -464,6 +464,18 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   final GlobalKey _sortButtonKey = GlobalKey();
   OverlayEntry? _sortOverlay;
 
+  // Variables para el proceso de restauración
+  final ValueNotifier<bool> _isRestoringNotifier = ValueNotifier<bool>(false);
+  final ValueNotifier<double> _restoreProgressNotifier = ValueNotifier<double>(0.0);
+  int _totalRestoreItems = 0;
+  int _processedRestoreItems = 0;
+
+  // --- STATE PARA IMPORTACIÓN ---
+  final ValueNotifier<bool> _isImportingNotifier = ValueNotifier<bool>(false);
+  final ValueNotifier<double> _importProgressNotifier = ValueNotifier<double>(0.0);
+  int _totalImportItems = 0;
+  int _processedImportItems = 0;
+
   bool _isSupportedFile(String filePath) {
     final ext = p.extension(filePath).toLowerCase();
     return _isImageFile(filePath) ||
@@ -615,13 +627,43 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
 
   /// Mueve una carpeta entera desde el Vórtice a la bóveda.
-  Future<void> _absorbDirectory(Directory dir) async {
-    final dirName = p.basename(dir.path);
-    final newPathInVault = await _getUniquePath(_vaultRootDir, dirName);
+  Future<void> _absorbDirectory(Directory sourceDir, [Directory? targetParentDir]) async {
+    final destParent = targetParentDir ?? _vaultRootDir;
+    final dirName = p.basename(sourceDir.path);
+    
+    // 1. Creamos la carpeta en la Bóveda
+    final newDirPath = await _getUniquePath(destParent, dirName);
+    final newDir = Directory(newDirPath);
+    await newDir.create();
+
+    final contents = await sourceDir.list().toList();
+    
+    // 2. Procesamos el contenido individualmente
+    for (final entity in contents) {
+      if (entity is File) {
+        if (_isSupportedFile(entity.path)) {
+          // Si es válido, lo mandamos a encriptar y a la base de datos
+          await _absorbImage(entity, reloadUI: false, targetDir: newDir);
+        } else {
+          // Si es un archivo oculto del sistema (basura), lo destruimos
+          final name = p.basename(entity.path).toLowerCase();
+          if (name == 'desktop.ini' || name == 'thumbs.db' || name == '.ds_store') {
+            try { await entity.delete(); } catch (_) {}
+          }
+        }
+      } else if (entity is Directory) {
+        // Si hay una carpeta adentro de la carpeta, usamos recursividad
+        await _absorbDirectory(entity, newDir);
+      }
+    }
+
+    // 3. Destruimos la carpeta original
+    // Si contiene archivos que el usuario quiere conservar (como PDFs o Word), 
+    // el borrado fallará intencionalmente, protegiendo los documentos del usuario.
     try {
-      await dir.rename(newPathInVault);
+      await sourceDir.delete();
     } catch (e) {
-      debugPrint("Error al absorber la carpeta ${dir.path}: $e");
+      debugPrint("La carpeta original no se borró porque contiene archivos no soportados.");
     }
   }
 
@@ -629,23 +671,20 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   Future<bool> _isDirectoryValidForAbsorption(Directory dir) async {
     final List<FileSystemEntity> contents = await dir.list().toList();
 
-    if (contents.isEmpty) {
-      return true;
-    }
+    if (contents.isEmpty) return true;// Las carpetas vacías también son válidas
 
     for (final entity in contents) {
       if (entity is File) {
-        if (!_isImageFile(entity.path)) {
-          return false;
+        // Usamos _isSupportedFile para aceptar también videos
+        if (_isSupportedFile(entity.path)) {
+          return true; // Encontramos oro, la carpeta es válida
         }
       } else if (entity is Directory) {
         final isSubDirValid = await _isDirectoryValidForAbsorption(entity);
-        if (!isSubDirValid) {
-          return false;
-        }
+        if (isSubDirValid) return true;
       }
     }
-    return true;
+    return false; // Solo se rechaza si está llena de archivos no multimedia (ej. PDFs)
   }
 
   /*Future<void> _initTray() async {
@@ -675,7 +714,19 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _searchController.dispose();
     _searchFocusNode.dispose();
     _gridFocusNode.dispose();
+    _isRestoringNotifier.dispose();
+    _restoreProgressNotifier.dispose();
+    _isImportingNotifier.dispose();
+    _importProgressNotifier.dispose();
     super.dispose();
+  }
+
+  Future<int> _countItems(Directory dir) async {
+    int count = 0;
+    await for (final _ in dir.list(recursive: true)) {
+      count++;
+    }
+    return count;
   }
 
   void _onVisibilityChanged() {
@@ -899,7 +950,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     final watcher = DirectoryWatcher(path);
 
     _watcherSubscription = watcher.events.listen((event) async {
-      // Ahora escuchamos tanto creaciones como modificaciones
       if ((event.type == ChangeType.ADD || event.type == ChangeType.MODIFY) &&
           _isSupportedFile(event.path)) {
         final pathKey = event.path.toLowerCase();
@@ -914,10 +964,54 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           final isReady = await _waitUntilFileIsReady(file);
 
           if (isReady && mounted) {
-            await _absorbImage(file);
+            // --- NUEVA LÓGICA: DETECTAR Y RECREAR CARPETAS ---
+            final relativePath = p.relative(file.path, from: path);
+            final dirname = p.dirname(relativePath);
+            Directory? targetDir;
+
+            // Si el archivo está dentro de una subcarpeta (ej: "Pruebas Seguras/foto.jpg")
+            if (dirname != '.') {
+              targetDir = Directory(p.join(_vaultRootDir.path, dirname));
+              if (!await targetDir.exists()) {
+                await targetDir.create(recursive: true);
+              }
+            }
+
+            // Pasamos el targetDir para que respete su carpeta destino en la bóveda
+            await _absorbImage(file, targetDir: targetDir);
+
+            // --- NUEVA LÓGICA: LIMPIAR LA CARPETA VACÍA EN EL VÓRTICE ---
+            if (dirname != '.') {
+              final sourceDir = Directory(p.dirname(file.path));
+              try {
+                if (await sourceDir.exists()) {
+                  // Revisamos qué queda dentro de la carpeta
+                  final remaining = await sourceDir.list().toList();
+                  bool canDelete = true;
+                  
+                  for (var item in remaining) {
+                    if (item is File) {
+                      final name = p.basename(item.path).toLowerCase();
+                      // Si hay algo que no sea basura del sistema, NO borramos la carpeta
+                      if (name != 'desktop.ini' && name != 'thumbs.db' && name != '.ds_store') {
+                        canDelete = false; 
+                      }
+                    } else {
+                      canDelete = false; // Hay otra subcarpeta adentro
+                    }
+                  }
+                  
+                  // Si solo quedaba basura, destruimos la carpeta entera sin dejar rastro
+                  if (canDelete) {
+                    await sourceDir.delete(recursive: true);
+                  }
+                }
+              } catch (_) {
+                // Ignoramos si Windows la tiene bloqueada momentáneamente
+              }
+            }
           }
         } finally {
-          // Una vez absorbido (o fallido), lo quitamos de la lista
           _processingFiles.remove(pathKey);
         }
       }
@@ -1008,7 +1102,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     }
   }
 
-  Future<void> _absorbImage(File imageFile, {bool reloadUI = true}) async {
+  Future<void> _absorbImage(File imageFile, {bool reloadUI = true, Directory? targetDir}) async {
     if (!await imageFile.exists()) return;
 
     // 1. Conservamos el nombre original exactamente como viene
@@ -1017,7 +1111,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     // 2. Solo aplicamos la ofuscación (.vtx)
     String newName = _obfuscateName(originalFileName);
 
-    final newPathInVault = await _getUniquePath(_vaultRootDir, newName);
+    final destinationDir = targetDir ?? _vaultRootDir;
+    final newPathInVault = await _getUniquePath(destinationDir, newName);
 
     try {
       await _moveFileRobustly(imageFile, newPathInVault);
@@ -1068,6 +1163,15 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     if (!await vortexDir.exists()) return;
 
     final contents = await vortexDir.list().toList();
+
+    // Encender la barra de progreso
+    _totalImportItems = contents.length;
+    _processedImportItems = 0;
+    if (_totalImportItems > 0) {
+      _isImportingNotifier.value = true;
+      _importProgressNotifier.value = 0.0;
+    }
+
     for (final entity in contents) {
       if (entity is File) {
         if (_isSupportedFile(entity.path)) {
@@ -1083,7 +1187,20 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           }
         }
       }
+      
+      // Actualizar progreso visual
+      _processedImportItems++;
+      if (_totalImportItems > 0) {
+        _importProgressNotifier.value = _processedImportItems / _totalImportItems;
+      }
+      
+      // --- LA MAGIA ESTÁ AQUÍ ---
+      // Le damos 10 milisegundos de respiro a Flutter para que dibuje el porcentaje en la pantalla.
+      await Future.delayed(const Duration(milliseconds: 10));
     }
+
+    // Apagar la barra de progreso al terminar
+    _isImportingNotifier.value = false;
 
     if (reloadUI) {
       await _loadVaultContents();
@@ -2369,6 +2486,10 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           
           // --- AQUÍ INSERTAMOS LA BARRA FLOTANTE ---
           _buildFloatingProgressBar(),
+          // --- AQUÍ INSERTAMOS LA NUEVA BARRA FLOTANTE DE RESTAURACIÓN ---
+          _buildRestoreProgressBar(),
+          /// --- AQUÍ INSERTAMOS LA NUEVA BARRA FLOTANTE DE IMPORTACIÓN ---
+          _buildImportProgressBar(),
         ],
       ),
       floatingActionButton: widget.currentDirectory == null
@@ -2621,21 +2742,24 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       {required IconData icon,
       required String title,
       required String subtitle}) {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Icon(icon, size: 80, color: Colors.white54),
-        const SizedBox(height: 16),
-        Text(title,
-            style: const TextStyle(fontSize: 16), textAlign: TextAlign.center),
-        const SizedBox(height: 8),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20),
-          child: Text(subtitle,
-              style: const TextStyle(color: Colors.white70),
-              textAlign: TextAlign.center),
-        ),
-      ],
+    return Center( // <-- Envolvemos todo en un Center
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.center, // <-- Asegura el centrado horizontal interno
+        children: [
+          Icon(icon, size: 80, color: Colors.white54),
+          const SizedBox(height: 16),
+          Text(title,
+              style: const TextStyle(fontSize: 16), textAlign: TextAlign.center),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Text(subtitle,
+                style: const TextStyle(color: Colors.white70),
+                textAlign: TextAlign.center),
+          ),
+        ],
+      ),
     );
   }
 
@@ -3052,6 +3176,13 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     final destinationDir = Directory(selectedDirectory);
     if (onStart != null) onStart();
 
+    _totalRestoreItems = await _countItems(_vaultRootDir);
+    _processedRestoreItems = 0;
+    if (_totalRestoreItems > 0) {
+      _isRestoringNotifier.value = true;
+      _restoreProgressNotifier.value = 0.0;
+    }
+
     setState(() => _isLoading = true);
 
     await _watcherSubscription?.cancel();
@@ -3059,6 +3190,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
     // Ejecuta la función recursiva que ya tiene la lógica de limpiar nombres
     await _restoreDirectoryContents(_vaultRootDir, destinationDir);
+    _isRestoringNotifier.value = false;
 
     await _clearVortexPathSetting();
     await _loadVaultContents();
@@ -3094,6 +3226,10 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           await _metadataService.deleteMetadata(idToDelete);
 
           await entity.delete(recursive: true);
+        }
+        _processedRestoreItems++;
+        if (_totalRestoreItems > 0) {
+          _restoreProgressNotifier.value = _processedRestoreItems / _totalRestoreItems;
         }
       } catch (e) {
         debugPrint("Error restaurando '${entity.path}': $e");
@@ -3470,6 +3606,145 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                             '${(progress * 100).toInt()}%',
                             style: const TextStyle(
                               color: Color(0xFF0A84FF), 
+                              fontSize: 13, 
+                              fontWeight: FontWeight.bold
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildRestoreProgressBar() {
+    return ValueListenableBuilder<bool>(
+      valueListenable: _isRestoringNotifier,
+      builder: (context, isRestoring, child) {
+        if (!isRestoring) return const SizedBox.shrink(); 
+
+        return Positioned(
+          bottom: 80.0, 
+          left: 0,
+          right: 0,
+          child: Center(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(20.0),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF252525).withOpacity(0.85),
+                    borderRadius: BorderRadius.circular(20.0),
+                    border: Border.all(color: Colors.white12, width: 0.5),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.3),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      )
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.5,
+                          valueColor: AlwaysStoppedAnimation<Color>(Colors.redAccent), // Rojo Mac
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      const Text(
+                        'Restaurando bóveda...',
+                        style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                      ),
+                      const SizedBox(width: 14),
+                      ValueListenableBuilder<double>(
+                        valueListenable: _restoreProgressNotifier,
+                        builder: (context, progress, child) {
+                          return Text(
+                            '${(progress * 100).toInt()}%',
+                            style: const TextStyle(
+                              color: Colors.redAccent, 
+                              fontSize: 13, 
+                              fontWeight: FontWeight.bold
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+  Widget _buildImportProgressBar() {
+    return ValueListenableBuilder<bool>(
+      valueListenable: _isImportingNotifier,
+      builder: (context, isImporting, child) {
+        if (!isImporting) return const SizedBox.shrink(); 
+
+        return Positioned(
+          bottom: 140.0, // <-- Más arriba para no pisar la de miniaturas
+          left: 0,
+          right: 0,
+          child: Center(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(20.0),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF252525).withOpacity(0.85),
+                    borderRadius: BorderRadius.circular(20.0),
+                    border: Border.all(color: Colors.white12, width: 0.5),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.3),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      )
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.5,
+                          valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF32D74B)), // Verde Mac
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      const Text(
+                        'Importando al Vórtice...',
+                        style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                      ),
+                      const SizedBox(width: 14),
+                      ValueListenableBuilder<double>(
+                        valueListenable: _importProgressNotifier,
+                        builder: (context, progress, child) {
+                          return Text(
+                            '${(progress * 100).toInt()}%',
+                            style: const TextStyle(
+                              color: Color(0xFF32D74B), 
                               fontSize: 13, 
                               fontWeight: FontWeight.bold
                             ),
@@ -4173,33 +4448,35 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                     final int lowResWidth = (screenWidth / 1.5).clamp(400.0, 1200.0).toInt();
                     
                     return GestureDetector(
-                        onTap: () => _wakeUpUI(toggle: true),
-                        child: Hero(
-                          tag: imageFile.path,
-                          child: InteractiveViewer(
-                            // 3. Solo permitimos paneo/zoom en la imagen central
-                            panEnabled: isCurrentPage, 
-                            minScale: 1.0,
-                            maxScale: 4.0,
-                            child: isCurrentPage 
-                              // 4A. IMAGEN CENTRAL: Se carga con toda su gloria y resolución original
-                              ? Image.file(
-                                  imageFile, 
-                                  fit: BoxFit.contain,
-                                  // gaplessPlayback es crucial. Evita que la pantalla parpadee en 
-                                  // negro mientras se cambia de la versión de baja a alta resolución.
-                                  gaplessPlayback: true, 
-                                )
-                              // 4B. IMÁGENES LATERALES: Se cargan ligeras (consumiendo ~5MB en lugar de ~100MB)
-                              : Image.file(
-                                  imageFile, 
-                                  fit: BoxFit.contain,
-                                  cacheWidth: lowResWidth, 
-                                  gaplessPlayback: true,
-                                ),
-                          ),
+                      onTap: () => _wakeUpUI(toggle: true),
+                      child: Hero(
+                        // LA SOLUCIÓN: Si es la imagen central usa el tag real. 
+                        // Si es una imagen adyacente, alteramos el tag para que Flutter no intente animarla.
+                        tag: isCurrentPage ? imageFile.path : '${imageFile.path}_disabled_$index',
+                        child: InteractiveViewer(
+                          // 3. Solo permitimos paneo/zoom en la imagen central
+                          panEnabled: isCurrentPage, 
+                          minScale: 1.0,
+                          maxScale: 4.0,
+                          child: isCurrentPage 
+                            // 4A. IMAGEN CENTRAL: Se carga con toda su gloria y resolución original
+                            ? Image.file(
+                                imageFile, 
+                                fit: BoxFit.contain,
+                                // gaplessPlayback es crucial. Evita que la pantalla parpadee en 
+                                // negro mientras se cambia de la versión de baja a alta resolución.
+                                gaplessPlayback: true, 
+                              )
+                            // 4B. IMÁGENES LATERALES: Se cargan ligeras (consumiendo ~5MB en lugar de ~100MB)
+                            : Image.file(
+                                imageFile, 
+                                fit: BoxFit.contain,
+                                cacheWidth: lowResWidth, 
+                                gaplessPlayback: true,
+                              ),
                         ),
-                      );
+                      ),
+                    );
                       
                   },
                 ),
