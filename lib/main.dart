@@ -388,13 +388,16 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
         Offstage(
           offstage: !_isWindowVisible || !_isAuthenticated,
           // NUEVO: Listener captura todo movimiento o clic de ratón/trackpad
-          child: Listener(
-            behavior: HitTestBehavior.translucent,
-            onPointerDown: (_) => _resetInactivityTimer(),
-            onPointerMove: (_) => _resetInactivityTimer(),
-            onPointerHover: (_) => _resetInactivityTimer(),
-            onPointerSignal: (_) => _resetInactivityTimer(), // Para la rueda de scroll
-            child: widget.navigatorChild, 
+          child: ExcludeFocus(
+            excluding: !_isWindowVisible || !_isAuthenticated, // Si está bloqueado, ignora el teclado
+            child: Listener(
+              behavior: HitTestBehavior.translucent,
+              onPointerDown: (_) => _resetInactivityTimer(),
+              onPointerMove: (_) => _resetInactivityTimer(),
+              onPointerHover: (_) => _resetInactivityTimer(),
+              onPointerSignal: (_) => _resetInactivityTimer(), 
+              child: widget.navigatorChild, 
+            ),
           ),
         ),
 
@@ -411,12 +414,16 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
                       _isAuthenticated = true;
                     });
                     _resetInactivityTimer();
+                    _mainVaultKey.currentState?.restoreFocus();
                   },
                   setAuthenticated: (value) {
                     setState(() {
                       _isAuthenticated = value;
                     });
-                    if (value) _resetInactivityTimer();
+                    if (value) {
+                      _resetInactivityTimer();
+                      _mainVaultKey.currentState?.restoreFocus(); 
+                    }
                   },
                 ),
               ),
@@ -603,10 +610,10 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     setState(() {
       _isPaused = true;
       // Vaciamos las listas grandes para liberar RAM.
-      _vaultContents.clear();
-      _filteredVaultContents.clear();
-      _itemKeys.clear();
-      _selectedItems.clear();
+      //_vaultContents.clear();
+      //_filteredVaultContents.clear();
+      //_itemKeys.clear();
+      //_selectedItems.clear();
       // Le pedimos al servicio de miniaturas que limpie su caché de memoria RAM.
       _thumbnailService.clearMemoryCache();
       // NO cancelamos el _watcherSubscription, ya que debe seguir funcionando.
@@ -631,7 +638,21 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     });
     // Quitamos el "if (_vortexPath != null)" para que siempre recargue la UI
     // sin importar si es la raíz o una subcarpeta.
-    _loadVaultContents();
+    _loadVaultContents(quiet: true);
+  }
+
+  // --- NUEVO: Método para recuperar el foco tras desbloquear ---
+  void restoreFocus() {
+    // Le damos 50ms a Flutter para que quite el ExcludeFocus y dibuje la galería
+    Future.delayed(const Duration(milliseconds: 50), () {
+      if (mounted) {
+        if (_isSearchVisible) {
+          _searchFocusNode.requestFocus(); // Si estaba buscando, foco al buscador
+        } else {
+          _gridFocusNode.requestFocus();   // Si no, foco a la cuadrícula
+        }
+      }
+    });
   }
 
   void _initializeAppServices() async {
@@ -4529,7 +4550,12 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                     // Para imágenes, aplicamos la lógica de precarga y el sistema de ocultar/mostrar la UI
                     final double screenWidth = MediaQuery.of(context).size.width;
                     final int lowResWidth = (screenWidth / 1.5).clamp(400.0, 1200.0).toInt();
-                    
+                    return _InteractiveImageItem(
+                      imageFile: imageFile,
+                      isCurrentPage: isCurrentPage,
+                      lowResWidth: lowResWidth,
+                      onTap: () => _wakeUpUI(toggle: true),
+                    );
                     return GestureDetector(
                       onTap: () => _wakeUpUI(toggle: true),
                       child: InteractiveViewer(
@@ -4713,9 +4739,11 @@ class PinAuthScreen extends StatefulWidget {
 class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
   _AuthState _currentState = _AuthState.checking;
   final _pinController = TextEditingController();
+  final FocusNode _pinFocusNode = FocusNode();
   String _tempPin = '';
   String? _errorMessage;
   int _pinLength = 0;
+  Timer? _focusTimer;
 
   @override
   void initState() {
@@ -4730,26 +4758,25 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
 
   @override
   void onWindowClose() async {
-    // <-- Convertir a async
-    // --- LÓGICA MODIFICADA ---
     final prefs = await SharedPreferences.getInstance();
     final closeAction =
         prefs.getString(_closeActionKey) ?? CloseAction.minimize.name;
 
     if (closeAction == CloseAction.exit.name) {
-      windowManager.destroy(); // Cierra la app
+      windowManager.destroy();
     } else {
-      windowManager.hide(); // Minimiza a la bandeja
+      windowManager.hide();
       widget.setAuthenticated(
-          true); // Mantiene el comportamiento original de saltar el auth si se minimiza
+          true);
     }
-    // --- FIN DE LA MODIFICACIÓN ---
   }
 
   @override
   void dispose() {
     windowManager.removeListener(this);
     _pinController.dispose();
+    _pinFocusNode.dispose();
+    _focusTimer?.cancel();
     super.dispose();
   }
 
@@ -4784,6 +4811,7 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
           _currentState = _AuthState.setupConfirm;
         });
         _pinController.clear();
+        _pinFocusNode.requestFocus();
         break;
       case _AuthState.setupConfirm:
         if (enteredPin == _tempPin) {
@@ -4796,6 +4824,7 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
             _currentState = _AuthState.setup;
           });
           _pinController.clear();
+          _pinFocusNode.requestFocus();
         }
         break;
       case _AuthState.login:
@@ -4806,6 +4835,7 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
         } else {
           setState(() => _errorMessage = 'PIN incorrecto.');
           _pinController.clear();
+          _pinFocusNode.requestFocus();
         }
         break;
       case _AuthState.checking:
@@ -4839,6 +4869,7 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
           ),
           TextField(
             controller: _pinController,
+            focusNode: _pinFocusNode,
             maxLength: _pinLength,
             autofocus: true,
             keyboardType: TextInputType.number,
@@ -4868,55 +4899,58 @@ class _PinAuthScreenState extends State<PinAuthScreen> with WindowListener {
         _currentState == _AuthState.setupConfirm;
 
     return Scaffold(
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(32.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.security, size: 60),
-              const SizedBox(height: 20),
-              Text(_getTitle(),
-                  style: Theme.of(context).textTheme.headlineSmall),
-              const SizedBox(height: 20),
-              if (_currentState == _AuthState.checking)
-                const SizedBox(
-                    height:
-                        55) // Mantiene el espacio visual vacío mientras carga
-              else if (useBoxesUI)
-                _buildPinInputArea()
-              else
-                SizedBox(
-                  width: 200,
-                  child: TextField(
-                    controller: _pinController,
-                    obscureText: true,
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                    textAlign: TextAlign.center,
-                    maxLength: 8,
-                    autofocus: true,
-                    decoration: const InputDecoration(
-                      labelText: 'PIN (4-8 dígitos)',
-                      border: OutlineInputBorder(),
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: () => _pinFocusNode.requestFocus(),
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(32.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.security, size: 60),
+                const SizedBox(height: 20),
+                Text(_getTitle(),
+                    style: Theme.of(context).textTheme.headlineSmall),
+                const SizedBox(height: 20),
+                if (_currentState == _AuthState.checking)
+                  const SizedBox(height: 55)
+                else if (useBoxesUI)
+                  _buildPinInputArea()
+                else
+                  SizedBox(
+                    width: 200,
+                    child: TextField(
+                      controller: _pinController,
+                      focusNode: _pinFocusNode,
+                      obscureText: true,
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      textAlign: TextAlign.center,
+                      maxLength: 8,
+                      autofocus: true,
+                      decoration: const InputDecoration(
+                        labelText: 'PIN (4-8 dígitos)',
+                        border: OutlineInputBorder(),
+                      ),
+                      onSubmitted: (_) => _onPinSubmitted(),
                     ),
-                    onSubmitted: (_) => _onPinSubmitted(),
                   ),
-                ),
-              const SizedBox(height: 16),
-              if (_errorMessage != null)
-                Text(
-                  _errorMessage!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-              if (_currentState == _AuthState.setup) ...[
-                const SizedBox(height: 24),
-                ElevatedButton(
-                  onPressed: _onPinSubmitted,
-                  child: const Text('Continuar'),
-                ),
+                const SizedBox(height: 16),
+                if (_errorMessage != null)
+                  Text(
+                    _errorMessage!,
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
+                if (_currentState == _AuthState.setup) ...[
+                  const SizedBox(height: 24),
+                  ElevatedButton(
+                    onPressed: _onPinSubmitted,
+                    child: const Text('Continuar'),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
@@ -5710,6 +5744,91 @@ class _TagManagementScreenState extends State<TagManagementScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _InteractiveImageItem extends StatefulWidget {
+  final File imageFile;
+  final bool isCurrentPage;
+  final int lowResWidth;
+  final VoidCallback onTap;
+
+  const _InteractiveImageItem({
+    required this.imageFile,
+    required this.isCurrentPage,
+    required this.lowResWidth,
+    required this.onTap,
+  });
+
+  @override
+  State<_InteractiveImageItem> createState() => _InteractiveImageItemState();
+}
+
+class _InteractiveImageItemState extends State<_InteractiveImageItem> {
+  // El controlador que maneja la matriz matemática del zoom
+  final TransformationController _transformationController = TransformationController();
+  Size? _lastScreenSize;
+
+  @override
+  void dispose() {
+    _transformationController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // LayoutBuilder nos avisa cada vez que la ventana cambia de dimensiones
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final currentSize = constraints.biggest;
+        
+        // Si la pantalla cambió de tamaño (ej. de normal a pantalla completa)
+        if (_lastScreenSize != null && _lastScreenSize != currentSize) {
+          
+          // Calculamos cuánto creció o se encogió la ventana en CADA eje
+          final widthRatio = currentSize.width / _lastScreenSize!.width;
+          final heightRatio = currentSize.height / _lastScreenSize!.height;
+
+          // Clonamos la posición actual del zoom
+          final matrix = _transformationController.value.clone();
+          
+          // Multiplicamos X por el crecimiento horizontal y Y por el crecimiento vertical
+          matrix[12] *= widthRatio; 
+          matrix[13] *= heightRatio;
+
+          // Le pedimos a Flutter que aplique la corrección suavemente
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              _transformationController.value = matrix;
+            }
+          });
+        }
+        
+        _lastScreenSize = currentSize;
+
+        return GestureDetector(
+          onTap: widget.onTap,
+          child: InteractiveViewer(
+            transformationController: _transformationController,
+            panEnabled: widget.isCurrentPage,
+            minScale: 1.0,
+            maxScale: 4.0,
+            child: widget.isCurrentPage
+                ? Image.file(
+                    widget.imageFile,
+                    fit: BoxFit.contain,
+                    gaplessPlayback: true,
+                  )
+                : Image.file(
+                    widget.imageFile,
+                    fit: BoxFit.contain,
+                    cacheWidth: widget.lowResWidth,
+                    gaplessPlayback: true,
+                  ),
+          ),
+        );
+      },
     );
   }
 }
