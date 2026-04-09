@@ -21,6 +21,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'dart:ffi' hide Size;
 import 'ui_utils.dart';
 import 'package:desktop_scrollbar/desktop_scrollbar.dart';
+import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 
 // Imports de los nuevos archivos
 import 'metadata_service.dart';
@@ -45,6 +46,7 @@ const String _autoHideTimeoutKey = 'auto_hide_timeout';
 final GlobalKey<_VaultExplorerScreenState> _mainVaultKey = GlobalKey<_VaultExplorerScreenState>();
 final ValueNotifier<bool> appVisibilityNotifier = ValueNotifier<bool>(true);
 final ValueNotifier<int> autoHideNotifier = ValueNotifier<int>(5);
+final ValueNotifier<bool> isVideoPlayingNotifier = ValueNotifier<bool>(false);
 
 enum SortCriteria { date, name, size }
 
@@ -52,6 +54,63 @@ enum CloseAction { exit, minimize }
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  const int singleInstancePort = 53427; // Un puerto interno arbitrario
+  
+  try {
+    // Intentamos adueñarnos de este puerto exclusivo para GVortex
+    final serverSocket = await ServerSocket.bind(InternetAddress.loopbackIPv4, singleInstancePort);
+    
+    // Si pasamos a esta línea, somos la instancia principal.
+    // Nos quedamos escuchando en segundo plano por si intentan abrir la app otra vez.
+    serverSocket.listen((socket) {
+      socket.listen((data) async {
+        final msg = String.fromCharCodes(data);
+        if (msg == 'wake_up') {
+          
+          // Verificamos si la ventana existe en pantalla (aunque esté minimizada) o si está oculta en la bandeja
+          bool isVisible = await windowManager.isVisible();
+          
+          if (!isVisible) {
+            // CASO 1: Está oculta en la bandeja (Cerrada con la 'x' o por inactividad)
+            // -> Mostramos la notificación nativa
+            final notification = LocalNotification(
+              identifier: 'gvortex_wake',
+              title: 'GVortex',
+              body: 'La aplicación ya está ejecutándose en segundo plano. Haz clic aquí para abrirla.',
+            );
+
+            notification.onClick = () {
+              appVisibilityNotifier.value = true; // Esto dispara el _handleWakeUpFromNotification
+            };
+
+            await notification.show();
+          } else {
+            // CASO 2: Está en la barra de tareas (Minimizada con el '-') o detrás de otras ventanas
+            // -> La restauramos de golpe sin molestar con notificaciones
+            if (await windowManager.isMinimized()) {
+              await windowManager.restore();
+            }
+            await windowManager.show();
+            await windowManager.focus();
+            
+            // Aseguramos que la interfaz (carpetas y bóveda) despierte
+            appVisibilityNotifier.value = true;
+          }
+        }
+      });
+    });
+  } catch (e) {
+    // Si el 'bind' falla, significa que el puerto está ocupado (la app YA está abierta).
+    // Nos conectamos a la app original, le decimos que despierte, y nos cerramos.
+    try {
+      final clientSocket = await Socket.connect(InternetAddress.loopbackIPv4, singleInstancePort);
+      clientSocket.write('wake_up');
+      await clientSocket.flush();
+      await clientSocket.close();
+    } catch (_) {}
+    
+    exit(0); // Destruimos esta segunda ventana de inmediato
+  }
   PaintingBinding.instance.imageCache.maximumSizeBytes = 1024 * 1024 * 50; // 50 MB para la caché de miniaturas
   MediaKit.ensureInitialized();
   bool startHidden = args.contains('--minimized');
@@ -268,14 +327,29 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
     // Escuchar el teclado a nivel global (Hardware)
     HardwareKeyboard.instance.addHandler(_handleKeyEvent);
     // Escuchar cambios en los ajustes de inactividad
-    autoHideNotifier.addListener(_resetInactivityTimer); 
+    autoHideNotifier.addListener(_resetInactivityTimer);
+    isVideoPlayingNotifier.addListener(_resetInactivityTimer); 
     _loadInitialSettings();
+    appVisibilityNotifier.addListener(_handleWakeUpFromNotification);
+  }
+  void _handleWakeUpFromNotification() async {
+    // Solo actuamos si la orden dice "despierta" y la app estaba dormida
+    if (appVisibilityNotifier.value && !_isWindowVisible) {
+      setState(() {
+        _isAuthenticated = false; // Exigimos el PIN por seguridad
+        _isWindowVisible = true;  // Quitamos la pantalla del escudo
+      });
+      await windowManager.show();
+      await windowManager.focus();
+    }
   }
 
   @override
   void dispose() {
+    appVisibilityNotifier.removeListener(_handleWakeUpFromNotification);
     HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
     autoHideNotifier.removeListener(_resetInactivityTimer);
+    isVideoPlayingNotifier.removeListener(_resetInactivityTimer);
     _inactivityTimer?.cancel();
     windowManager.removeListener(this);
     trayManager.removeListener(this);
@@ -295,7 +369,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WindowListener, TrayList
   void _resetInactivityTimer() {
     _inactivityTimer?.cancel();
     // Solo activamos la bomba de tiempo si la app es visible, está desbloqueada y el ajuste es mayor a 0
-    if (autoHideNotifier.value > 0 && _isWindowVisible && _isAuthenticated) {
+    if (autoHideNotifier.value > 0 && _isWindowVisible && _isAuthenticated && !isVideoPlayingNotifier.value) {
       _inactivityTimer = Timer(Duration(seconds: autoHideNotifier.value), _autoHideApp);
     }
   }
@@ -462,6 +536,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   late Directory _currentVaultDir;
   late Directory _vaultRootDir;
   final TextEditingController _folderNameController = TextEditingController();
+
+  bool _isDraggingExternal = false;
 
   // Instancias de los servicios
   final MetadataService _metadataService = MetadataService();
@@ -2376,7 +2452,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         if (isFile) {
           // ¡NUEVO! Renombramos la miniatura existente en lugar de borrarla
           await _thumbnailService.renameThumbnail(entity.path, finalUniquePath);
-          await _moveFileRobustly(entity as File, finalUniquePath);
+          await _moveFileRobustly(entity, finalUniquePath);
         } else {
           await entity.rename(finalUniquePath);
         }
@@ -2597,33 +2673,94 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           ),
         ],
       ),
-      body: Stack( // <-- AÑADIMOS EL STACK AQUÍ
-        children: [
-          Column(
-            children: [
-              Expanded(
-                child: _isLoading
-                    ? const Center(child: CircularProgressIndicator())
-                    : _vortexPath == null
-                        ? _buildEmptyState(
-                            icon: Icons.all_inclusive,
-                            title: 'No has seleccionado una carpeta Vórtice.',
-                            subtitle:
-                                'Usa el botón para elegir una carpeta y empezar a vigilarla.',
-                          )
-                        : _buildFileExplorerBody(),
+      
+      body: DropRegion(
+        formats: Formats.standardFormats, // Acepta archivos y URIs
+        onDropOver: (DropOverEvent event) {
+          // Verifica si lo que están arrastrando son archivos
+          if (event.session.items.any((item) => item.canProvide(Formats.fileUri))) {
+            if (mounted && !_isDraggingExternal) {
+              setState(() => _isDraggingExternal = true);
+            }
+            return DropOperation.copy;
+          }
+          return DropOperation.none;
+        },
+        onDropLeave: (DropEvent event) {
+          if (mounted) setState(() => _isDraggingExternal = false);
+        },
+        onPerformDrop: _handleSuperDrop, // <-- Tu nueva función
+        child: Stack(
+          children: [
+            Column(
+              children: [
+                Expanded(
+                  child: _isLoading
+                      ? const Center(child: CircularProgressIndicator())
+                      : _vortexPath == null
+                          ? _buildEmptyState(
+                              icon: Icons.all_inclusive,
+                              title: 'No has seleccionado una carpeta Vórtice.',
+                              subtitle:
+                                  'Usa el botón para elegir una carpeta y empezar a vigilarla.',
+                            )
+                          : _buildFileExplorerBody(),
+                ),
+                if (_vortexPath != null && !_isLoading) _buildThumbnailSlider(),
+              ],
+            ),
+            
+            // Tus barras flotantes originales
+            _buildFloatingProgressBar(),
+            _buildRestoreProgressBar(),
+            _buildImportProgressBar(),
+
+            // --- NUEVO: CAPA VISUAL DE DRAG & DROP ---
+            if (_isDraggingExternal)
+              Positioned.fill(
+                child: ClipRRect(
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+                    child: Container(
+                      color: const Color(0xFF0A84FF).withOpacity(0.15), // Azul tenue macOS
+                      child: Center(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 30),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF252525).withOpacity(0.85),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: const Color(0xFF0A84FF), width: 2),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.4),
+                                blurRadius: 20,
+                                offset: const Offset(0, 10),
+                              )
+                            ],
+                          ),
+                          child: const Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.download_rounded, size: 60, color: Color(0xFF0A84FF)),
+                              SizedBox(height: 16),
+                              Text(
+                                'Suelta para importar a la Bóveda',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               ),
-              if (_vortexPath != null && !_isLoading) _buildThumbnailSlider(),
-            ],
-          ),
-          
-          // --- AQUÍ INSERTAMOS LA BARRA FLOTANTE ---
-          _buildFloatingProgressBar(),
-          // --- AQUÍ INSERTAMOS LA NUEVA BARRA FLOTANTE DE RESTAURACIÓN ---
-          _buildRestoreProgressBar(),
-          /// --- AQUÍ INSERTAMOS LA NUEVA BARRA FLOTANTE DE IMPORTACIÓN ---
-          _buildImportProgressBar(),
-        ],
+          ],
+        ),
       ),
       floatingActionButton: widget.currentDirectory == null
           ? FloatingActionButton.extended(
@@ -3910,6 +4047,77 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       },
     );
   }
+
+  // --- NUEVO: MANEJADOR DE DRAG & DROP EXTERNO CON SUPER_DRAG_AND_DROP ---
+  Future<void> _handleSuperDrop(PerformDropEvent event) async {
+    setState(() => _isDraggingExternal = false);
+
+    final List<String> filePaths = [];
+
+    // 1. Extraemos todas las rutas de los archivos arrastrados de forma asíncrona
+    for (final item in event.session.items) {
+      if (item.dataReader?.canProvide(Formats.fileUri) == true) {
+        final completer = Completer<String?>();
+        item.dataReader!.getValue<Uri>(
+          Formats.fileUri,
+          (uri) => completer.complete(uri?.toFilePath()),
+          onError: (error) => completer.complete(null),
+        );
+        final path = await completer.future;
+        if (path != null) {
+          filePaths.add(path);
+        }
+      }
+    }
+
+    if (filePaths.isEmpty) return;
+
+    // 2. Encendemos la barra de progreso usando tu lógica existente
+    _totalImportItems = filePaths.length;
+    _processedImportItems = 0;
+    _isImportingNotifier.value = true;
+    _importProgressNotifier.value = 0.0;
+
+    // 3. Procesamos las rutas exactamente igual que antes
+    for (final path in filePaths) {
+      final type = FileSystemEntity.typeSync(path);
+
+      if (type == FileSystemEntityType.file) {
+        if (_isSupportedFile(path)) {
+          // Si es un archivo soportado, lo absorbemos
+          await _absorbImage(File(path), reloadUI: false, targetDir: _currentVaultDir);
+        }
+      } else if (type == FileSystemEntityType.directory) {
+        final dir = Directory(path);
+        // Validamos si la carpeta contiene archivos soportados
+        if (await _isDirectoryValidForAbsorption(dir)) {
+          await _absorbDirectory(dir, _currentVaultDir);
+        } else {
+          if (mounted) {
+            showGlassSnackBar(
+              context, 
+              'Carpeta "${p.basename(dir.path)}" ignorada: vacía o sin multimedia.', 
+              icon: Icons.warning_amber_rounded, 
+              iconColor: Colors.amber
+            );
+          }
+        }
+      }
+
+      // Actualizar progreso visual
+      _processedImportItems++;
+      _importProgressNotifier.value = _processedImportItems / _totalImportItems;
+      
+      // Respiro para Flutter
+      await Future.delayed(const Duration(milliseconds: 10));
+    }
+
+    // Apagar la barra de progreso al terminar
+    _isImportingNotifier.value = false;
+    
+    // Recargar la interfaz para mostrar los nuevos archivos
+    await _loadVaultContents();
+  }
 }
 
 class _ContextMenuItemWidget extends StatelessWidget {
@@ -4545,6 +4753,9 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                         onControlsVisibilityChanged: (visible) {
                           setState(() => _showNavigation = visible);
                         },
+                        onPlayingStateChanged: (isPlaying) {
+                          isVideoPlayingNotifier.value = isPlaying;
+                        },
                       );
                     }
                     // Para imágenes, aplicamos la lógica de precarga y el sistema de ocultar/mostrar la UI
@@ -4555,29 +4766,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                       isCurrentPage: isCurrentPage,
                       lowResWidth: lowResWidth,
                       onTap: () => _wakeUpUI(toggle: true),
-                    );
-                    return GestureDetector(
-                      onTap: () => _wakeUpUI(toggle: true),
-                      child: InteractiveViewer(
-                        panEnabled: isCurrentPage, 
-                        minScale: 1.0,
-                        maxScale: 4.0,
-                        // ¡ADIÓS HERO! Simplemente devolvemos la imagen directamente.
-                        child: isCurrentPage 
-                          ? Image.file(
-                              imageFile, 
-                              fit: BoxFit.contain,
-                              gaplessPlayback: true, 
-                            )
-                          : Image.file(
-                              imageFile, 
-                              fit: BoxFit.contain,
-                              cacheWidth: lowResWidth, 
-                              gaplessPlayback: true,
-                            ),
-                      ),
-                    );
-                      
+                    );                      
                   },
                 ),
                 if (_currentIndex > 0)

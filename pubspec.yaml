@@ -37,6 +37,7 @@ dependencies:
   local_notifier: ^0.1.6
   google_fonts: ^8.0.2
   desktop_scrollbar: ^1.0.5
+  super_drag_and_drop: ^0.9.1
 
 dev_dependencies:
   flutter_test:

@@ -11,6 +11,7 @@ class CustomVideoPlayer extends StatefulWidget {
   final VoidCallback? onToggleFullscreen; // Recibe la función del padre
   final ValueChanged<bool>? onControlsVisibilityChanged;
   final bool startControlsVisible;
+  final ValueChanged<bool>? onPlayingStateChanged;
 
   const CustomVideoPlayer({
     super.key, 
@@ -19,6 +20,7 @@ class CustomVideoPlayer extends StatefulWidget {
     this.onToggleFullscreen,
     this.onControlsVisibilityChanged,
     this.startControlsVisible = true,
+    this.onPlayingStateChanged,
   });
 
   @override
@@ -61,6 +63,7 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
 
     _player.stream.playing.listen((playing) {
       if (mounted) setState(() => _isPlaying = playing);
+      widget.onPlayingStateChanged?.call(playing);// NOTIFICAR AL PADRE
     });
     _player.stream.position.listen((position) {
       if (mounted) setState(() => _position = position);
@@ -83,6 +86,7 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
 
   @override
   void dispose() {
+    widget.onPlayingStateChanged?.call(false);
     _hideTimer?.cancel();
     _player.dispose();
     super.dispose();
