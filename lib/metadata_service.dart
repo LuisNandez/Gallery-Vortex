@@ -4,17 +4,21 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 //import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:http/http.dart' as http;
 
 class ImageMetadata {
   List<String> tags;
   int rating;
   int addedTimestamp;
+  Map<String, String> profile; // <-- NUEVO: Guardará los datos de AniList
 
   ImageMetadata({
     List<String>? tags, 
     this.rating = 0, 
-    this.addedTimestamp = 0
-  }) : tags = tags ?? []; 
+    this.addedTimestamp = 0,
+    Map<String, String>? profile, // <-- NUEVO
+  }) : tags = tags ?? [],
+       profile = profile ?? {}; // <-- NUEVO
 }
 
 class MetadataService {
@@ -39,14 +43,15 @@ class MetadataService {
 
     _db = await openDatabase(
       dbPath,
-      version: 2,
+      version: 4,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE metadata (
             image_id TEXT PRIMARY KEY,
             tags TEXT,
             rating INTEGER,
-            added_timestamp INTEGER
+            added_timestamp INTEGER,
+            profile TEXT -- <-- NUEVA COLUMNA
           )
         ''');
         await db.execute('''
@@ -56,9 +61,21 @@ class MetadataService {
         ''');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
-        // MIGRACIÓN SEGURA: Añade la columna a tu tabla existente sin borrar datos
         if (oldVersion < 2) {
-          await db.execute('ALTER TABLE metadata ADD COLUMN added_timestamp INTEGER DEFAULT 0');
+          try {
+            await db.execute('ALTER TABLE metadata ADD COLUMN added_timestamp INTEGER DEFAULT 0');
+          } catch (_) {
+            // Ignoramos el error si la columna ya se había creado previamente
+          }
+        }
+        if (oldVersion < 3) { 
+          try {
+            await db.execute('ALTER TABLE metadata ADD COLUMN profile TEXT');
+          } catch (e) {
+            // Ignoramos el "duplicate column name" silenciosamente.
+            // Esto evita cierres inesperados si la columna ya existe por pruebas previas.
+            //debugPrint('Nota: La columna profile ya existía en la base de datos.');
+          }
         }
       },
     );
@@ -70,6 +87,8 @@ class MetadataService {
         tags: List<String>.from(jsonDecode(row['tags'] as String)),
         rating: row['rating'] as int,
         addedTimestamp: (row['added_timestamp'] as int?) ?? 0,
+        // <-- NUEVA LECTURA DE DATOS:
+        profile: row['profile'] != null ? Map<String, String>.from(jsonDecode(row['profile'] as String)) : {},
       );
     }
 
@@ -126,6 +145,7 @@ class MetadataService {
         'tags': jsonEncode(metadata.tags),
         'rating': metadata.rating,
         'added_timestamp': metadata.addedTimestamp,
+        'profile': jsonEncode(metadata.profile),
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
@@ -252,4 +272,62 @@ class MetadataService {
     }
     return count;
   }
+  Future<void> setProfileForImage(String imageId, Map<String, String> profileData) async {
+    final metadata = _imageData.putIfAbsent(imageId, () => ImageMetadata());
+    metadata.profile = profileData;
+    await _saveSingleMetadata(imageId, metadata);
+  }
+}
+
+Future<List<Map<String, dynamic>>> searchAniListCharacters(String characterName) async {
+  const String url = 'https://graphql.anilist.co';
+  
+  // ¡CORRECCIONES!: 
+  // 1. characters(sort: [SEARCH_MATCH, FAVOURITES_DESC]) para que el más famoso salga primero.
+  // 2. media(page: 1, perPage: 1) en lugar del 'first: 1' que causaba el error.
+  const String query = '''
+    query (\$search: String) {
+      Page(page: 1, perPage: 5) {
+        characters(search: \$search, sort: [SEARCH_MATCH, FAVOURITES_DESC]) {
+          id
+          name {
+            full
+          }
+          gender
+          age
+          media(sort: POPULARITY_DESC, type: ANIME, page: 1, perPage: 1) {
+            nodes {
+              title {
+                romaji
+                english
+              }
+            }
+          }
+        }
+      }
+    }
+  ''';
+
+  try {
+    final response = await http.post(
+      Uri.parse(url),
+      headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+      body: jsonEncode({'query': query, 'variables': {'search': characterName}}),
+    );
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      final characters = data['data']?['Page']?['characters'] as List?;
+      
+      if (characters != null) {
+        return List<Map<String, dynamic>>.from(characters);
+      }
+    } else {
+      // Ahora, si la API se queja por algo, lo verás en la consola (Debug Console)
+      print("Error de AniList (Código ${response.statusCode}): ${response.body}");
+    }
+  } catch (e) {
+    print("Error de red conectando con AniList: $e");
+  }
+  return [];
 }

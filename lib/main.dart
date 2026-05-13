@@ -22,6 +22,7 @@ import 'dart:ffi' hide Size;
 import 'ui_utils.dart';
 import 'package:desktop_scrollbar/desktop_scrollbar.dart';
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
+import 'duplicate_scanner_screen.dart';
 
 // Imports de los nuevos archivos
 import 'metadata_service.dart';
@@ -29,6 +30,7 @@ import 'tag_editor_dialog.dart';
 import 'rating_stars_display.dart';
 import 'pin_input_boxes.dart';
 import 'thumbnail_service.dart';
+import 'profile_editor_dialog.dart';
 
 const String _vortexFolderPathKey = 'vortex_folder_path';
 const String _masterPinKey = 'master_pin';
@@ -644,8 +646,10 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
         // Buscar por etiquetas
         final imageId = p.relative(entity.path, from: _vaultRootDir.path);
-        final tags = _metadataService.getMetadataForImage(imageId).tags;
-        if (tags.any((tag) => tag.toLowerCase().contains(query))) return true;
+        final metadata = _metadataService.getMetadataForImage(imageId); // <-- Cambio clave
+        
+        if (metadata.tags.any((tag) => tag.toLowerCase().contains(query))) return true;
+        if (metadata.profile.values.any((val) => val.toLowerCase().contains(query))) return true;
 
         return false;
       }
@@ -1559,6 +1563,26 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         ),
       if (hasImageSelected)
         _ContextMenuItemWidget(
+          title: 'Perfil',
+          onTap: () {
+            _hideContextMenu();
+            final selectedImageIds = _selectedItems
+                .whereType<File>()
+                .map((f) => p.relative(f.path, from: _vaultRootDir.path))
+                .toList();
+
+            showDialog(
+              context: context,
+              builder: (context) => ProfileEditorDialog(
+                imageIds: selectedImageIds,
+                metadataService: _metadataService,
+              ),
+            ).then((_) => setState(() {}));
+          },
+          icon: Icons.person_outline,
+        ),
+      if (hasImageSelected)
+        _ContextMenuItemWidget(
           title: 'Calificación',
           onTap: () {
             _hideContextMenu();
@@ -1976,6 +2000,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           ),
         ).then((_) async {
           await _syncPreferences();
+          await Future.delayed(const Duration(milliseconds: 350));
           // La UI ya no se trabará, incluso si esto se ejecuta mientras
           // la animación de la pantalla todavía se está deslizando.
           if (mounted) {
@@ -2671,6 +2696,37 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             tooltip: 'Ajustes',
             onPressed: _openSettings,
           ),
+          ///// NUEVO: Botón para escanear y limpiar duplicados
+          IconButton(
+  icon: const Icon(Icons.cleaning_services_outlined),
+  tooltip: 'Limpiar duplicados',
+  onPressed: () async {
+    // IMPORTANTE: Pausamos el watcher para que no detecte borrados como cambios externos
+    final bool wasPaused = _isWatcherPaused;
+    if (!wasPaused) {
+      await toggleWatcher(); 
+    }
+    
+    if (mounted) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => DuplicateScannerScreen(
+            vaultDir: _vaultRootDir,
+            metadataService: _metadataService,
+            thumbnailService: _thumbnailService,
+          ),
+        ),
+      );
+      
+      // Al volver, recargamos la galería para quitar los archivos borrados
+      await _loadVaultContents(quiet: true);
+      if (!wasPaused) {
+        await toggleWatcher(); // Reanudamos si estaba encendido
+      }
+    }
+  },
+),
         ],
       ),
       
@@ -2714,6 +2770,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
             _buildFloatingProgressBar(),
             _buildRestoreProgressBar(),
             _buildImportProgressBar(),
+            _buildAnimatedThumbnailProgressBar(),
+            
 
             // --- NUEVO: CAPA VISUAL DE DRAG & DROP ---
             if (_isDraggingExternal)
@@ -3635,6 +3693,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     String addedDateStr = '--';
     int rating = 0;
     List<String> tags = [];
+    Map<String, String> profile = {};
 
     try {
       // 1. Extraemos datos del sistema operativo
@@ -3659,6 +3718,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         final metadata = _metadataService.getMetadataForImage(imageId);
         rating = metadata.rating;
         tags = metadata.tags;
+        profile = metadata.profile;
         
         if (metadata.addedTimestamp > 0) {
           final addedDate = DateTime.fromMillisecondsSinceEpoch(metadata.addedTimestamp);
@@ -3734,6 +3794,17 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                                         isTagsExpanded = !isTagsExpanded;
                                       });
                                     }),
+                                    
+                                    // <-- NUEVO: Mostrar Perfil en Propiedades
+                                    if (profile.isNotEmpty) ...[
+                                      const Divider(color: Colors.white12, height: 24, thickness: 1),
+                                      const Text('Perfil de AniList', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF0A84FF), fontSize: 13)),
+                                      const SizedBox(height: 12),
+                                      _buildPropertyRow('Nombre:', profile['name'] ?? 'N/A'),
+                                      _buildPropertyRow('Franquicia:', profile['franchise'] ?? 'N/A'),
+                                      _buildPropertyRow('Género:', profile['gender'] ?? 'N/A'),
+                                      _buildPropertyRow('Edad:', profile['age'] ?? 'N/A'),
+                                    ],
                                   ],
                                 ],
                               ),
@@ -4048,6 +4119,64 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     );
   }
 
+  Widget _buildAnimatedThumbnailProgressBar() {
+  return ValueListenableBuilder<bool>(
+    valueListenable: _thumbnailService.isGeneratingAnimNotifier,
+    builder: (context, isGenerating, child) {
+      if (!isGenerating) return const SizedBox.shrink();
+
+      return Positioned(
+        bottom: 140.0, // Un poco más arriba que la barra azul
+        left: 0,
+        right: 0,
+        child: Center(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(20.0),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF252525).withOpacity(0.85),
+                  borderRadius: BorderRadius.circular(20.0),
+                  border: Border.all(color: Colors.white12, width: 0.5),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(
+                      width: 16, height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.5,
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.deepPurpleAccent), 
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    const Text(
+                      'Animando vista previa de videos...',
+                      style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                    ),
+                    const SizedBox(width: 14),
+                    ValueListenableBuilder<double>(
+                      valueListenable: _thumbnailService.animProgressNotifier,
+                      builder: (context, progress, child) {
+                        return Text(
+                          '${(progress * 100).toInt()}%',
+                          style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 13, fontWeight: FontWeight.bold),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    },
+  );
+}
+
   // --- NUEVO: MANEJADOR DE DRAG & DROP EXTERNO CON SUPER_DRAG_AND_DROP ---
   Future<void> _handleSuperDrop(PerformDropEvent event) async {
     setState(() => _isDraggingExternal = false);
@@ -4183,7 +4312,10 @@ class ImageItemWidget extends StatefulWidget {
 }
 
 class _ImageItemWidgetState extends State<ImageItemWidget> {
-  File? _thumbFile; // Guardará el resultado de la carga
+  File? _thumbFile; // La estática
+  File? _animThumbFile; // La animada (si es video)
+  bool _isHovering = false; // <-- El interruptor mágico
+  bool _isLoadingAnim = false;
 
   @override
   void initState() {
@@ -4215,6 +4347,30 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
     }
   }
 
+  Future<void> _handleHoverEnter(PointerEnterEvent event) async {
+    setState(() => _isHovering = true);
+    
+    // Si no es video, o ya tenemos el archivo, no hacemos nada
+    final isVideo = _isVideo(widget.imageFile.path);
+    if (!isVideo || _animThumbFile != null || _isLoadingAnim) return;
+
+    setState(() => _isLoadingAnim = true);
+    
+    // Le pedimos a FFmpeg que trabaje (o que la saque del disco si ya la hizo antes)
+    final animFile = await widget.thumbnailService.getAnimatedThumbnail(widget.imageFile);
+    
+    if (mounted) {
+      setState(() {
+        _animThumbFile = animFile;
+        _isLoadingAnim = false;
+      });
+    }
+  }
+
+  void _handleHoverExit(PointerExitEvent event) {
+    setState(() => _isHovering = false);
+  }
+
   @override
   Widget build(BuildContext context) {
     // 1. Obtenemos toda la metadata de una vez para extraer tanto el rating como las etiquetas
@@ -4226,12 +4382,15 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
     // Usamos la función que descifra el .vtx para saber si es video
     final bool isVideo = _isVideo(widget.imageFile.path);
 
-    return GestureDetector(
-      onTap: widget.onTap,
-      onSecondaryTapUp: widget.onSecondaryTapUp,
-      // 1. EL HERO YA NO ESTÁ AQUÍ AFUERA
-      child: Container(
-        decoration: BoxDecoration(
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: _handleHoverEnter,
+      onExit: _handleHoverExit,
+      child: GestureDetector(
+        onTap: widget.onTap,
+        onSecondaryTapUp: widget.onSecondaryTapUp,
+        child: Container(
+          decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(8.0),
           border: Border.all(
             color: widget.isSelected ? const Color(0xFF0A84FF) : Colors.transparent,
@@ -4259,23 +4418,49 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
                   fit: StackFit.expand,
                   children: [
                     
-                    Image.file(
-                      _thumbFile!,
-                      fit: BoxFit.cover,
-                      errorBuilder: (context, error, stackTrace) {
-                        return Container(
-                          color: Colors.grey.shade900,
-                          child: const Center(child: Icon(Icons.broken_image, color: Colors.white54, size: 40)),
-                        );
-                      },
-                      gaplessPlayback: true,
-                    ),
+                    if (_isHovering && isVideo && _animThumbFile != null)
+                        Image.file(
+                          _animThumbFile!,
+                          fit: BoxFit.cover,
+                          cacheWidth: 300, // <- Fase 1 (protege tu RAM)
+                          gaplessPlayback: true,
+                          errorBuilder: (context, error, stackTrace) => Container(color: Colors.grey.shade900),
+                        )
+                      // Si NO está hovered, o la animación sigue cargando -> Mostramos la estática
+                      else
+                        Image.file(
+                          _thumbFile!,
+                          fit: BoxFit.cover,
+                          cacheWidth: 300, 
+                          gaplessPlayback: true,
+                          errorBuilder: (context, error, stackTrace) {
+                            return Container(
+                              color: Colors.grey.shade900,
+                              child: Center(
+                                child: Icon(
+                                  isVideo ? Icons.movie_creation_outlined : Icons.broken_image, 
+                                  color: Colors.white24, 
+                                  size: 40
+                                ),
+                              ),
+                            );
+                          },
+                        ),
 
-                    // CAPA DEL BOTÓN DE PLAY (Solo si es video)
-                    if (isVideo) ...[
-                      Container(color: Colors.black26), 
-                      const Center(child: Icon(Icons.play_circle_fill, color: Colors.white, size: 48)),
-                    ],
+                      // CAPA DEL BOTÓN DE PLAY (Desaparece al hacer hover para ver la animación)
+                      if (isVideo && !_isHovering) ...[
+                        Container(color: Colors.black26),
+                        const Center(child: Icon(Icons.play_circle_fill, color: Colors.white, size: 48)),
+                      ],
+
+                      // Si está generando el WebP la primera vez, mostramos un pequeño loading
+                      if (isVideo && _isHovering && _isLoadingAnim)
+                         const Center(
+                           child: SizedBox(
+                             width: 24, height: 24, 
+                             child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)
+                           )
+                         ),
 
                     // Sombreado inferior
                     Positioned(
@@ -4319,7 +4504,8 @@ class _ImageItemWidgetState extends State<ImageItemWidget> {
                         ),
                       ),
                   ],
-                ),
+                  ),
+          ),
         ),
       ),
     );
@@ -4334,6 +4520,7 @@ class FullScreenImageViewer extends StatefulWidget {
   final MetadataService metadataService;
   final String vaultRootPath;
   final ValueChanged<int>? onPageChangedCallback;
+  final bool instantTransition;
 
   const FullScreenImageViewer({
     super.key,
@@ -4344,6 +4531,7 @@ class FullScreenImageViewer extends StatefulWidget {
     required this.metadataService,
     required this.vaultRootPath,
     this.onPageChangedCallback,
+    this.instantTransition = false,
   });
 
   @override
@@ -4361,6 +4549,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
   final FocusNode _viewerFocusNode = FocusNode();
   Timer? _hideTimer;
   bool _wasMaximized = false;
+  final TransformationController _syncZoomController = TransformationController();
 
   String _getCleanName(String path) {
     String filename = p.basename(path);
@@ -4518,6 +4707,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
     _viewerFocusNode.dispose();
     _ratingOverlay?.remove();
     _pageController.dispose();
+    _syncZoomController.dispose();
     super.dispose();
   }
 
@@ -4608,19 +4798,27 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
   // --- MÉTODOS DE NAVEGACIÓN ---
   void _irASiguiente() {
     if (_currentIndex < widget.imageFiles.length - 1) {
-      _pageController.nextPage(
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-      );
+      if (widget.instantTransition) {
+        _pageController.jumpToPage(_currentIndex + 1); // Corte instantáneo
+      } else {
+        _pageController.nextPage(
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeInOut,
+        );
+      }
     }
   }
 
   void _irAAnterior() {
     if (_currentIndex > 0) {
-      _pageController.previousPage(
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-      );
+      if (widget.instantTransition) {
+        _pageController.jumpToPage(_currentIndex - 1); // Corte instantáneo
+      } else {
+        _pageController.previousPage(
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeInOut,
+        );
+      }
     }
   }
 
@@ -4722,6 +4920,7 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                 alignment: Alignment.center,
                 children: [
                 PageView.builder(
+                  physics: widget.instantTransition ? const NeverScrollableScrollPhysics() : null,
                   controller: _pageController,
                   itemCount: widget.imageFiles.length,
                   onPageChanged: (index) {
@@ -4766,9 +4965,30 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                       isCurrentPage: isCurrentPage,
                       lowResWidth: lowResWidth,
                       onTap: () => _wakeUpUI(toggle: true),
+                      sharedController: widget.instantTransition ? _syncZoomController : null,
                     );                      
                   },
                 ),
+                if (widget.instantTransition && _showNavigation)
+                  Positioned(
+                    top: _isTrueFullScreen ? 30 : 20, // Se ajusta si la barra superior está oculta
+                    child: IgnorePointer( // Para que no estorbe si quieres hacer zoom justo ahí
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0A84FF).withOpacity(0.15), // Azul Mac para resaltar
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [
+                            BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 10, offset: const Offset(0, 4))
+                          ]
+                        ),
+                        child: Text(
+                          "Comparando • ${(currentFile.lengthSync() / (1024 * 1024)).toStringAsFixed(2)} MB",
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
+                      ),
+                    ),
+                  ),
                 if (_currentIndex > 0)
                   Positioned(
                     left: 10,
@@ -5607,6 +5827,34 @@ String _getRealExtension(String filename) {
   return p.extension(filename).toLowerCase();
 }
 
+bool _isAnimatedImage(String filePath) {
+  final ext = _getRealExtension(filePath);
+  
+  if (ext == '.gif') return true; // Asumimos que todos los GIFs son animados
+  
+  if (ext == '.webp') {
+    // Truco hacker: Leemos los primeros 21 bytes del archivo para buscar la bandera de animación
+    try {
+      final file = File(filePath);
+      final raf = file.openSync(mode: FileMode.read);
+      final header = raf.readSync(21); 
+      raf.closeSync();
+      
+      if (header.length >= 21) {
+        final isWebP = String.fromCharCodes(header.sublist(8, 12)) == 'WEBP';
+        final isVP8X = String.fromCharCodes(header.sublist(12, 16)) == 'VP8X';
+        
+        if (isWebP && isVP8X) {
+          // En el formato VP8X extendido, el byte 20 contiene los "Flags".
+          // El segundo bit (0x02) nos chismorrea si el archivo tiene frames de animación.
+          return (header[20] & 0x02) != 0;
+        }
+      }
+    } catch (_) {}
+  }
+  return false;
+}
+
 // Detecta videos leyendo la extensión real descifrada
 bool _isVideo(String filePath) {
   final ext = _getRealExtension(filePath);
@@ -5942,12 +6190,14 @@ class _InteractiveImageItem extends StatefulWidget {
   final bool isCurrentPage;
   final int lowResWidth;
   final VoidCallback onTap;
+  final TransformationController? sharedController;
 
   const _InteractiveImageItem({
     required this.imageFile,
     required this.isCurrentPage,
     required this.lowResWidth,
     required this.onTap,
+    this.sharedController,
   });
 
   @override
@@ -5955,38 +6205,41 @@ class _InteractiveImageItem extends StatefulWidget {
 }
 
 class _InteractiveImageItemState extends State<_InteractiveImageItem> {
-  // El controlador que maneja la matriz matemática del zoom
-  final TransformationController _transformationController = TransformationController();
+  // Ahora no siempre crearemos uno nuevo, usaremos el compartido si existe
+  late TransformationController _transformationController;
   Size? _lastScreenSize;
 
   @override
+  void initState() {
+    super.initState();
+    // Si el padre nos dio un controlador, lo usamos. Si no, creamos uno propio.
+    _transformationController = widget.sharedController ?? TransformationController();
+  }
+
+  @override
   void dispose() {
-    _transformationController.dispose();
+    // ¡IMPORTANTE! Solo destruimos el controlador si es nuestro. 
+    // Si es compartido, el padre se encarga de destruirlo.
+    if (widget.sharedController == null) {
+      _transformationController.dispose();
+    }
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // LayoutBuilder nos avisa cada vez que la ventana cambia de dimensiones
     return LayoutBuilder(
       builder: (context, constraints) {
         final currentSize = constraints.biggest;
         
-        // Si la pantalla cambió de tamaño (ej. de normal a pantalla completa)
         if (_lastScreenSize != null && _lastScreenSize != currentSize) {
-          
-          // Calculamos cuánto creció o se encogió la ventana en CADA eje
           final widthRatio = currentSize.width / _lastScreenSize!.width;
           final heightRatio = currentSize.height / _lastScreenSize!.height;
-
-          // Clonamos la posición actual del zoom
           final matrix = _transformationController.value.clone();
           
-          // Multiplicamos X por el crecimiento horizontal y Y por el crecimiento vertical
           matrix[12] *= widthRatio; 
           matrix[13] *= heightRatio;
 
-          // Le pedimos a Flutter que aplique la corrección suavemente
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) {
               _transformationController.value = matrix;
@@ -6002,7 +6255,7 @@ class _InteractiveImageItemState extends State<_InteractiveImageItem> {
             transformationController: _transformationController,
             panEnabled: widget.isCurrentPage,
             minScale: 1.0,
-            maxScale: 4.0,
+            maxScale: 6.0, // <-- SUGERENCIA: Aumentado a 6x para inspección de pixeles profundos
             child: widget.isCurrentPage
                 ? Image.file(
                     widget.imageFile,
