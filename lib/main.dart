@@ -31,6 +31,7 @@ import 'rating_stars_display.dart';
 import 'pin_input_boxes.dart';
 import 'thumbnail_service.dart';
 import 'profile_editor_dialog.dart';
+import 'profile_management_screen.dart';
 
 const String _vortexFolderPathKey = 'vortex_folder_path';
 const String _masterPinKey = 'master_pin';
@@ -646,10 +647,21 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
 
         // Buscar por etiquetas
         final imageId = p.relative(entity.path, from: _vaultRootDir.path);
-        final metadata = _metadataService.getMetadataForImage(imageId); // <-- Cambio clave
+        final metadata = _metadataService.getMetadataForImage(imageId); 
         
         if (metadata.tags.any((tag) => tag.toLowerCase().contains(query))) return true;
         if (metadata.profile.values.any((val) => val.toLowerCase().contains(query))) return true;
+
+        // ---> NUEVO: Buscar por personaje y franquicia asociadas a la imagen
+        for (final charId in metadata.characterIds) {
+          final character = _metadataService.getCharacterSync(charId);
+          if (character != null) {
+            if (character.name.toLowerCase().contains(query) ||
+                character.franchise.toLowerCase().contains(query)) {
+              return true; // Encontramos oro
+            }
+          }
+        }
 
         return false;
       }
@@ -1576,6 +1588,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
               builder: (context) => ProfileEditorDialog(
                 imageIds: selectedImageIds,
                 metadataService: _metadataService,
+                vaultRootPath: _vaultRootDir.path,
               ),
             ).then((_) => setState(() {}));
           },
@@ -2656,6 +2669,27 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                 }
               },
             ),
+          if (!_isLoading && _vortexPath != null)
+            IconButton(
+              icon: const Icon(Icons.people_alt_outlined),
+              tooltip: 'Administrar Perfiles',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  PageRouteBuilder(
+                    transitionDuration: const Duration(milliseconds: 300),
+                    pageBuilder: (context, animation, secondaryAnimation) => FadeTransition(
+                      opacity: animation,
+                      child: ProfileManagementScreen(
+                        metadataService: _metadataService,
+                        thumbnailService: _thumbnailService,
+                        vaultRootPath: _vaultRootDir.path,
+                      ),
+                    ),
+                  ),
+                ).then((_) => _loadVaultContents(quiet: true));
+              },
+            ),
           if (!_isLoading &&
               _vortexPath != null &&
               widget.currentDirectory == null)
@@ -3693,38 +3727,38 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     String addedDateStr = '--';
     int rating = 0;
     List<String> tags = [];
-    Map<String, String> profile = {};
+    List<LocalCharacter> characterProfiles = []; // Cambiado a lista para multiperfil relacional
 
     try {
-      // 1. Extraemos datos del sistema operativo
       final stat = await entity.stat();
       dateStr = "${stat.modified.day.toString().padLeft(2, '0')}/${stat.modified.month.toString().padLeft(2, '0')}/${stat.modified.year} ${stat.modified.hour.toString().padLeft(2, '0')}:${stat.modified.minute.toString().padLeft(2, '0')}";
       
       if (isFile) {
-        // Limpiamos el nombre usando tus utilidades existentes
         name = _getDeobfuscatedName(name);
         final realExt = _getRealExtension(entity.path).replaceAll('.', '').toUpperCase();
         type = _isVideo(entity.path) ? '$realExt (Video)' : '$realExt (Imagen)';
         
-        // Calculamos el peso
         int bytes = stat.size;
         if (bytes < 1024) sizeStr = '$bytes B';
         else if (bytes < 1024 * 1024) sizeStr = '${(bytes / 1024).toStringAsFixed(2)} KB';
         else if (bytes < 1024 * 1024 * 1024) sizeStr = '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
         else sizeStr = '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
 
-        // 2. Extraemos datos de tu base de datos SQLite (Vórtice)
         final imageId = p.relative(entity.path, from: _vaultRootDir.path);
         final metadata = _metadataService.getMetadataForImage(imageId);
         rating = metadata.rating;
         tags = metadata.tags;
-        profile = metadata.profile;
+        
+        // Iterar de forma asíncrona y recolectar todos los perfiles asociados a la relación M:M
+        for (int id in metadata.characterIds) {
+          final char = await _metadataService.getCharacterById(id);
+          if (char != null) characterProfiles.add(char);
+        }
         
         if (metadata.addedTimestamp > 0) {
           final addedDate = DateTime.fromMillisecondsSinceEpoch(metadata.addedTimestamp);
           addedDateStr = "${addedDate.day.toString().padLeft(2, '0')}/${addedDate.month.toString().padLeft(2, '0')}/${addedDate.year} ${addedDate.hour.toString().padLeft(2, '0')}:${addedDate.minute.toString().padLeft(2, '0')}";
         } else {
-           // Fallback por si era una imagen vieja sin timestamp
            addedDateStr = dateStr;
         }
       }
@@ -3732,13 +3766,12 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       debugPrint("Error leyendo propiedades: $e");
     }
 
-    // 3. Dibujamos el Dialog con diseño macOS, Scroll y expansor de etiquetas
     if (mounted) {
       showDialog(
         context: context,
         barrierColor: Colors.black.withOpacity(0.4),
         builder: (context) {
-          bool isTagsExpanded = false; // Estado local para este diálogo
+          bool isTagsExpanded = false;
 
           return StatefulBuilder(
             builder: (context, setState) {
@@ -3750,8 +3783,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                   child: BackdropFilter(
                     filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
                     child: Container(
-                      width: 350,
-                      // Limitamos la altura al 80% de la pantalla para forzar el scroll si es necesario
+                      width: 380,
                       constraints: BoxConstraints(
                         maxHeight: MediaQuery.of(context).size.height * 0.8,
                       ),
@@ -3768,11 +3800,9 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                             child: Text('Propiedades', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white))
                           ),
                           const SizedBox(height: 20),
-                          
-                          // Flexible + SingleChildScrollView habilitan el scroll interno
                           Flexible(
                             child: SingleChildScrollView(
-                              physics: const BouncingScrollPhysics(), // Scroll suave estilo Mac
+                              physics: const BouncingScrollPhysics(),
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
@@ -3788,29 +3818,51 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                                     _buildPropertyRow('Añadido:', addedDateStr),
                                     _buildPropertyRow('Estrellas:', rating > 0 ? '$rating' : 'Sin calificar'),
                                     
-                                    // Nuevo row inteligente para las etiquetas
                                     _buildTagsPropertyRow('Etiquetas:', tags, isTagsExpanded, () {
                                       setState(() {
                                         isTagsExpanded = !isTagsExpanded;
                                       });
                                     }),
                                     
-                                    // <-- NUEVO: Mostrar Perfil en Propiedades
-                                    if (profile.isNotEmpty) ...[
-                                      const Divider(color: Colors.white12, height: 24, thickness: 1),
-                                      const Text('Perfil de AniList', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF0A84FF), fontSize: 13)),
-                                      const SizedBox(height: 12),
-                                      _buildPropertyRow('Nombre:', profile['name'] ?? 'N/A'),
-                                      _buildPropertyRow('Franquicia:', profile['franchise'] ?? 'N/A'),
-                                      _buildPropertyRow('Género:', profile['gender'] ?? 'N/A'),
-                                      _buildPropertyRow('Edad:', profile['age'] ?? 'N/A'),
+                                    // Bucle de renderizado dinámico multiperfil relacional
+                                    if (characterProfiles.isNotEmpty) ...[
+                                      ...characterProfiles.map((charProfile) {
+                                        return Padding(
+                                          padding: const EdgeInsets.only(top: 16.0),
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              const Divider(color: Colors.white12, height: 10, thickness: 0.5),
+                                              Row(
+                                                children: [
+                                                  const Icon(Icons.account_circle_outlined, size: 14, color: Color(0xFF32D74B)),
+                                                  const SizedBox(width: 6),
+                                                  Text(
+                                                    'Perfil: ${charProfile.name}', 
+                                                    style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF32D74B), fontSize: 13)
+                                                  ),
+                                                ],
+                                              ),
+                                              const SizedBox(height: 8),
+                                              _buildPropertyRow('Franquicia:', charProfile.franchise),
+                                              _buildPropertyRow('Género:', charProfile.gender),
+                                              _buildPropertyRow('Edad:', charProfile.age),
+                                              _buildPropertyRow('Cumpleaños:', charProfile.birthday),
+                                              
+                                              // Render de pares clave-valor customizados de este personaje
+                                              ...charProfile.customFields.entries.map((field) {
+                                                return _buildPropertyRow('${field.key}:', field.value);
+                                              }),
+                                            ],
+                                          ),
+                                        );
+                                      }),
                                     ],
                                   ],
                                 ],
                               ),
                             ),
                           ),
-                          
                           const SizedBox(height: 24),
                           Center(
                             child: TextButton(

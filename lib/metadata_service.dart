@@ -1,37 +1,86 @@
 // metadata_service.dart
+import 'dart:io';
 import 'dart:convert';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-//import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-import 'package:http/http.dart' as http;
+
+class LocalCharacter {
+  final int? id;
+  String name;
+  String franchise;
+  String gender;
+  String age;
+  String birthday;
+  String? avatarPath;
+  Map<String, String> customFields;
+
+  LocalCharacter({
+    this.id,
+    required this.name,
+    required this.franchise,
+    this.gender = 'Desconocido',
+    this.age = 'Desconocida',
+    this.birthday = 'Desconocido',
+    this.avatarPath,
+    Map<String, String>? customFields,
+  }) : customFields = customFields ?? {};
+
+  Map<String, dynamic> toMap() {
+    return {
+      if (id != null) 'id': id,
+      'name': name,
+      'franchise': franchise,
+      'gender': gender,
+      'age': age,
+      'birthday': birthday,
+      'avatar_path': avatarPath,
+      'custom_fields': jsonEncode(customFields),
+    };
+  }
+
+  factory LocalCharacter.fromMap(Map<String, dynamic> map) {
+    return LocalCharacter(
+      id: map['id'] as int?,
+      name: map['name'] as String,
+      franchise: map['franchise'] as String,
+      gender: map['gender'] as String? ?? 'Desconocido',
+      age: map['age'] as String? ?? 'Desconocida',
+      birthday: map['birthday'] as String? ?? 'Desconocido',
+      avatarPath: map['avatar_path'] as String?,
+      customFields: map['custom_fields'] != null
+          ? Map<String, String>.from(jsonDecode(map['custom_fields'] as String))
+          : {},
+    );
+  }
+}
 
 class ImageMetadata {
   List<String> tags;
   int rating;
   int addedTimestamp;
-  Map<String, String> profile; // <-- NUEVO: Guardará los datos de AniList
+  List<int> characterIds; // Soporta múltiples personajes relacionales
+  Map<String, String> profile; // Mantenido por retrocompatibilidad estructurada
 
   ImageMetadata({
-    List<String>? tags, 
-    this.rating = 0, 
+    List<String>? tags,
+    this.rating = 0,
     this.addedTimestamp = 0,
-    Map<String, String>? profile, // <-- NUEVO
+    List<int>? characterIds,
+    Map<String, String>? profile,
   }) : tags = tags ?? [],
-       profile = profile ?? {}; // <-- NUEVO
+       characterIds = characterIds ?? [],
+       profile = profile ?? {};
 }
 
 class MetadataService {
-  // --- INICIO PATRÓN SINGLETON ---
-  // Esto asegura que todas las carpetas y subcarpetas compartan 
-  // exactamente la misma memoria y base de datos de etiquetas.
   static final MetadataService _instance = MetadataService._internal();
   factory MetadataService() => _instance;
   MetadataService._internal();
-  // --- FIN PATRÓN SINGLETON ---
 
   final Map<String, ImageMetadata> _imageData = {};
   List<String> _allTags = [];
+  final Map<int, LocalCharacter> _charactersCache = {};
   bool _isInitialized = false;
   late Database _db;
 
@@ -43,7 +92,7 @@ class MetadataService {
 
     _db = await openDatabase(
       dbPath,
-      version: 4,
+      version: 7, // Versión maestra con soporte multi-perfil e intermedio
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE metadata (
@@ -51,45 +100,81 @@ class MetadataService {
             tags TEXT,
             rating INTEGER,
             added_timestamp INTEGER,
-            profile TEXT -- <-- NUEVA COLUMNA
+            profile TEXT
           )
         ''');
         await db.execute('''
-          CREATE TABLE tags (
-            tag TEXT PRIMARY KEY
-          )
+          CREATE TABLE tags (tag TEXT PRIMARY KEY)
         ''');
+        await _createCharacterTables(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
-          try {
-            await db.execute('ALTER TABLE metadata ADD COLUMN added_timestamp INTEGER DEFAULT 0');
-          } catch (_) {
-            // Ignoramos el error si la columna ya se había creado previamente
-          }
+          try { await db.execute('ALTER TABLE metadata ADD COLUMN added_timestamp INTEGER DEFAULT 0'); } catch (_) {}
         }
-        if (oldVersion < 3) { 
+        if (oldVersion < 3) {
+          try { await db.execute('ALTER TABLE metadata ADD COLUMN profile TEXT'); } catch (_) {}
+        }
+        if (oldVersion < 5) {
+          await _createCharacterTables(db);
+        }
+        if (oldVersion < 6) {
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS image_characters (
+              image_id TEXT,
+              character_id INTEGER,
+              PRIMARY KEY (image_id, character_id)
+            )
+          ''');
+          // Migrar datos viejos individuales si existían
           try {
-            await db.execute('ALTER TABLE metadata ADD COLUMN profile TEXT');
-          } catch (e) {
-            // Ignoramos el "duplicate column name" silenciosamente.
-            // Esto evita cierres inesperados si la columna ya existe por pruebas previas.
-            //debugPrint('Nota: La columna profile ya existía en la base de datos.');
-          }
+            final legacy = await db.query('metadata', columns: ['image_id', 'character_id']);
+            for (var row in legacy) {
+              if (row['character_id'] != null) {
+                await db.insert('image_characters', {
+                  'image_id': row['image_id'] as String,
+                  'character_id': row['character_id'] as int,
+                }, conflictAlgorithm: ConflictAlgorithm.ignore);
+              }
+            }
+          } catch (_) {}
+        }
+        if (oldVersion < 7) {
+          // <--- NUEVA ACTUALIZACIÓN: Añadir la columna de avatar a tablas existentes
+          try { await db.execute('ALTER TABLE characters ADD COLUMN avatar_path TEXT'); } catch (_) {}
         }
       },
     );
 
-    // Cargar todo a memoria para lecturas instantáneas (síncronas) en la UI
+    // 1. Cargar metadatos principales a memoria RAM
     final metadataRows = await _db.query('metadata');
     for (final row in metadataRows) {
-      _imageData[row['image_id'] as String] = ImageMetadata(
-        tags: List<String>.from(jsonDecode(row['tags'] as String)),
-        rating: row['rating'] as int,
+      final imgId = row['image_id'] as String;
+      _imageData[imgId] = ImageMetadata(
+        tags: row['tags'] != null ? List<String>.from(jsonDecode(row['tags'] as String)) : [],
+        rating: row['rating'] as int? ?? 0,
         addedTimestamp: (row['added_timestamp'] as int?) ?? 0,
-        // <-- NUEVA LECTURA DE DATOS:
+        characterIds: [],
         profile: row['profile'] != null ? Map<String, String>.from(jsonDecode(row['profile'] as String)) : {},
       );
+    }
+
+    // 2. Cargar mapeos relacionales mutitarget
+    final relRows = await _db.query('image_characters');
+    for (final row in relRows) {
+      final imgId = row['image_id'] as String;
+      final charId = row['character_id'] as int;
+      if (_imageData.containsKey(imgId)) {
+        _imageData[imgId]!.characterIds.add(charId);
+      }
+    }
+
+    final charRows = await _db.query('characters');
+    for (final row in charRows) {
+      final char = LocalCharacter.fromMap(row);
+      if (char.id != null) {
+        _charactersCache[char.id!] = char;
+      }
     }
 
     final tagRows = await _db.query('tags');
@@ -98,7 +183,112 @@ class MetadataService {
     _isInitialized = true;
   }
 
-  // IMPORTANTE: Ahora recibe el imageId (ruta relativa), no el nombre del archivo
+  Future<void> _createCharacterTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS characters (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        franchise TEXT NOT NULL,
+        gender TEXT,
+        age TEXT,
+        birthday TEXT,
+        custom_fields TEXT
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS image_characters (
+        image_id TEXT,
+        character_id INTEGER,
+        PRIMARY KEY (image_id, character_id)
+      )
+    ''');
+  }
+
+  // --- CRUD CENTRAL DE PERSONAJES LOCALES ---
+
+  Future<int> insertCharacter(LocalCharacter character) async {
+    final id = await _db.insert('characters', character.toMap());
+    // ---> NUEVO: Guardar en caché
+    _charactersCache[id] = LocalCharacter(
+      id: id,
+      name: character.name,
+      franchise: character.franchise,
+      gender: character.gender,
+      age: character.age,
+      birthday: character.birthday,
+      customFields: character.customFields,
+    );
+    return id;
+  }
+
+  Future<void> updateCharacter(LocalCharacter character) async {
+    if (character.id == null) return;
+    await _db.update('characters', character.toMap(), where: 'id = ?', whereArgs: [character.id]);
+    // ---> NUEVO: Actualizar caché
+    _charactersCache[character.id!] = character;
+  }
+
+  Future<void> deleteCharacter(int id) async {
+    await _db.delete('characters', where: 'id = ?', whereArgs: [id]);
+    await _db.delete('image_characters', where: 'character_id = ?', whereArgs: [id]);
+    
+    // ---> NUEVO: Eliminar de la caché
+    _charactersCache.remove(id); 
+    
+    for (final meta in _imageData.values) {
+      meta.characterIds.remove(id);
+    }
+  }
+
+  // ---> NUEVO: Método síncrono para leer desde la UI al instante
+  LocalCharacter? getCharacterSync(int id) {
+    return _charactersCache[id];
+  }
+
+  Future<List<LocalCharacter>> getAllCharacters() async {
+    final rows = await _db.query('characters', orderBy: 'name ASC');
+    return rows.map((row) => LocalCharacter.fromMap(row)).toList();
+  }
+
+  Future<LocalCharacter?> getCharacterById(int id) async {
+    final rows = await _db.query('characters', where: 'id = ?', whereArgs: [id]);
+    if (rows.isEmpty) return null;
+    return LocalCharacter.fromMap(rows.first);
+  }
+
+  // Comprueba si un personaje exacto ya existe en la base de datos local por nombre y franquicia
+  Future<LocalCharacter?> findExistingCharacter(String name, String franchise) async {
+    final rows = await _db.query(
+      'characters',
+      where: 'LOWER(name) = ? AND LOWER(franchise) = ?',
+      whereArgs: [name.trim().toLowerCase(), franchise.trim().toLowerCase()],
+    );
+    if (rows.isEmpty) return null;
+    return LocalCharacter.fromMap(rows.first);
+  }
+
+  // --- INTERMEDIARIOS MUCHOS A MUCHOS ---
+
+  Future<void> addCharacterToImage(String imageId, int characterId) async {
+    final metadata = _imageData.putIfAbsent(imageId, () => ImageMetadata());
+    if (!metadata.characterIds.contains(characterId)) {
+      metadata.characterIds.add(characterId);
+      await _db.insert('image_characters', {
+        'image_id': imageId,
+        'character_id': characterId
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+  }
+
+  Future<void> removeCharacterFromImage(String imageId, int characterId) async {
+    if (_imageData.containsKey(imageId)) {
+      _imageData[imageId]!.characterIds.remove(characterId);
+      await _db.delete('image_characters', where: 'image_id = ? AND character_id = ?', whereArgs: [imageId, characterId]);
+    }
+  }
+
+  // --- REPARACIÓN DE MÉTODOS DE ETIQUETAS (SOLUCIÓN A TU ERROR EN PANTALLA) ---
+
   ImageMetadata getMetadataForImage(String imageId) {
     return _imageData[imageId] ?? ImageMetadata();
   }
@@ -110,15 +300,12 @@ class MetadataService {
     if (cleanTag.isEmpty) return;
 
     final metadata = _imageData.putIfAbsent(imageId, () => ImageMetadata());
-    if (!metadata.tags.contains(cleanTag)) {
-      metadata.tags.add(cleanTag);
-    }
+    if (!metadata.tags.contains(cleanTag)) metadata.tags.add(cleanTag);
 
     if (!_allTags.contains(cleanTag)) {
       _allTags.add(cleanTag);
       await _db.insert('tags', {'tag': cleanTag}, conflictAlgorithm: ConflictAlgorithm.ignore);
     }
-
     await _saveSingleMetadata(imageId, metadata);
   }
 
@@ -136,7 +323,12 @@ class MetadataService {
     await _saveSingleMetadata(imageId, metadata);
   }
 
-  // Guarda SOLO el registro modificado. Cero cuellos de botella.
+  Future<void> setAddedTimestamp(String imageId, int timestamp) async {
+    final metadata = _imageData.putIfAbsent(imageId, () => ImageMetadata());
+    metadata.addedTimestamp = timestamp;
+    await _saveSingleMetadata(imageId, metadata);
+  }
+
   Future<void> _saveSingleMetadata(String imageId, ImageMetadata metadata) async {
     await _db.insert(
       'metadata',
@@ -151,80 +343,31 @@ class MetadataService {
     );
   }
 
-  Future<void> setAddedTimestamp(String imageId, int timestamp) async {
-    final metadata = _imageData.putIfAbsent(imageId, () => ImageMetadata());
-    metadata.addedTimestamp = timestamp;
-    await _saveSingleMetadata(imageId, metadata);
-  }
-
   Future<void> updateImagePath(String oldId, String newId) async {
-    // 1. Si es un archivo individual que se movió
     if (_imageData.containsKey(oldId)) {
       final metadata = _imageData.remove(oldId)!;
-      _imageData[newId] = metadata; // Actualizamos memoria RAM
-      
-      // Eliminamos el rastro de la ruta antigua
+      _imageData[newId] = metadata;
       await _db.delete('metadata', where: 'image_id = ?', whereArgs: [oldId]);
-      
-      // Insertamos en la nueva ruta. 'ConflictAlgorithm.replace' es la magia:
-      // Si existía un "registro fantasma" con esa ruta, lo sobrescribe sin dar error.
-      await _db.insert(
-        'metadata',
-        {
-          'image_id': newId,
-          'tags': jsonEncode(metadata.tags),
-          'rating': metadata.rating,
-          'added_timestamp': metadata.addedTimestamp,
-        },
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    }
-    
-    // 2. Si es una CARPETA que se movió, debemos actualizar todo su contenido
-    final prefix = oldId + p.separator;
-    final keysToUpdate = _imageData.keys.where((k) => k.startsWith(prefix)).toList();
-    
-    for (final key in keysToUpdate) {
-      final newKey = newId + key.substring(oldId.length);
-      final metadata = _imageData.remove(key)!;
-      _imageData[newKey] = metadata;
-      
-      // Mismo proceso: Borrar el viejo e insertar/reemplazar el nuevo
-      await _db.delete('metadata', where: 'image_id = ?', whereArgs: [key]);
-      
-      await _db.insert(
-        'metadata',
-        {
-          'image_id': newKey,
-          'tags': jsonEncode(metadata.tags),
-          'rating': metadata.rating,
-          'added_timestamp': metadata.addedTimestamp,
-        },
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+      await _saveSingleMetadata(newId, metadata);
+
+      final links = await _db.query('image_characters', where: 'image_id = ?', whereArgs: [oldId]);
+      await _db.delete('image_characters', where: 'image_id = ?', whereArgs: [oldId]);
+      for (var l in links) {
+        await _db.insert('image_characters', {'image_id': newId, 'character_id': l['character_id'] as int});
+      }
     }
   }
 
-  // Bonus: Borrar la metadata cuando eliminas la imagen para no dejar datos fantasma
   Future<void> deleteMetadata(String imageId) async {
     _imageData.remove(imageId);
     await _db.delete('metadata', where: 'image_id = ?', whereArgs: [imageId]);
-    
-    final prefix = imageId + p.separator;
-    final keysToDelete = _imageData.keys.where((k) => k.startsWith(prefix)).toList();
-    for (final key in keysToDelete) {
-      _imageData.remove(key);
-      await _db.delete('metadata', where: 'image_id = ?', whereArgs: [key]);
-    }
+    await _db.delete('image_characters', where: 'image_id = ?', whereArgs: [imageId]);
   }
 
-  // Borra una etiqueta de la faz de la tierra (globalmente)
   Future<void> deleteTagGlobal(String tag) async {
     final cleanTag = tag.trim().toLowerCase();
     _allTags.remove(cleanTag);
     await _db.delete('tags', where: 'tag = ?', whereArgs: [cleanTag]);
-
-    // Eliminar la etiqueta de la metadata de cada imagen en memoria y DB
     for (final entry in _imageData.entries) {
       if (entry.value.tags.contains(cleanTag)) {
         entry.value.tags.remove(cleanTag);
@@ -233,13 +376,11 @@ class MetadataService {
     }
   }
 
-  // Renombra una etiqueta en todo el sistema
   Future<void> renameTagGlobal(String oldTag, String newTag) async {
     final cleanOld = oldTag.trim().toLowerCase();
     final cleanNew = newTag.trim().toLowerCase();
     if (cleanNew.isEmpty || cleanOld == cleanNew) return;
 
-    // 1. Actualizar lista global
     if (!_allTags.contains(cleanNew)) {
       _allTags.add(cleanNew);
       await _db.insert('tags', {'tag': cleanNew}, conflictAlgorithm: ConflictAlgorithm.ignore);
@@ -247,87 +388,50 @@ class MetadataService {
     _allTags.remove(cleanOld);
     await _db.delete('tags', where: 'tag = ?', whereArgs: [cleanOld]);
 
-    // 2. Actualizar todas las imágenes que tenían la etiqueta vieja
     for (final entry in _imageData.entries) {
       if (entry.value.tags.contains(cleanOld)) {
         entry.value.tags.remove(cleanOld);
-        if (!entry.value.tags.contains(cleanNew)) {
-          entry.value.tags.add(cleanNew);
-        }
+        if (!entry.value.tags.contains(cleanNew)) entry.value.tags.add(cleanNew);
         await _saveSingleMetadata(entry.key, entry.value);
       }
     }
   }
 
-  // Cuenta cuántas imágenes están usando una etiqueta específica
   int countImagesWithTag(String tag) {
     final cleanTag = tag.trim().toLowerCase();
     int count = 0;
-    
-    // Recorremos todas las imágenes cargadas en memoria RAM
     for (final metadata in _imageData.values) {
-      if (metadata.tags.contains(cleanTag)) {
-        count++;
-      }
+      if (metadata.tags.contains(cleanTag)) count++;
     }
     return count;
   }
+
+  // Mantener firma por compatibilidad con llamados antiguos de perfiles planos si quedaban rastros
   Future<void> setProfileForImage(String imageId, Map<String, String> profileData) async {
     final metadata = _imageData.putIfAbsent(imageId, () => ImageMetadata());
     metadata.profile = profileData;
     await _saveSingleMetadata(imageId, metadata);
   }
-}
 
-Future<List<Map<String, dynamic>>> searchAniListCharacters(String characterName) async {
-  const String url = 'https://graphql.anilist.co';
-  
-  // ¡CORRECCIONES!: 
-  // 1. characters(sort: [SEARCH_MATCH, FAVOURITES_DESC]) para que el más famoso salga primero.
-  // 2. media(page: 1, perPage: 1) en lugar del 'first: 1' que causaba el error.
-  const String query = '''
-    query (\$search: String) {
-      Page(page: 1, perPage: 5) {
-        characters(search: \$search, sort: [SEARCH_MATCH, FAVOURITES_DESC]) {
-          id
-          name {
-            full
-          }
-          gender
-          age
-          media(sort: POPULARITY_DESC, type: ANIME, page: 1, perPage: 1) {
-            nodes {
-              title {
-                romaji
-                english
-              }
-            }
-          }
-        }
-      }
-    }
-  ''';
-
-  try {
-    final response = await http.post(
-      Uri.parse(url),
-      headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
-      body: jsonEncode({'query': query, 'variables': {'search': characterName}}),
-    );
-
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
-      final characters = data['data']?['Page']?['characters'] as List?;
-      
-      if (characters != null) {
-        return List<Map<String, dynamic>>.from(characters);
-      }
-    } else {
-      // Ahora, si la API se queja por algo, lo verás en la consola (Debug Console)
-      print("Error de AniList (Código ${response.statusCode}): ${response.body}");
-    }
-  } catch (e) {
-    print("Error de red conectando con AniList: $e");
+  Future<String> saveAvatarImage(List<int> bytes) async {
+    final supportDir = await getApplicationSupportDirectory();
+    final avatarDir = Directory(p.join(supportDir.path, 'avatars'));
+    if (!await avatarDir.exists()) await avatarDir.create(recursive: true);
+    
+    final fileName = 'avatar_${DateTime.now().millisecondsSinceEpoch}.png';
+    final file = File(p.join(avatarDir.path, fileName));
+    await file.writeAsBytes(bytes);
+    return file.path;
   }
-  return [];
+
+  // --- NUEVO: Obtener todas las imágenes vinculadas a un personaje ---
+  List<String> getImagesForCharacter(int characterId) {
+    List<String> matchingImages = [];
+    _imageData.forEach((imageId, metadata) {
+      if (metadata.characterIds.contains(characterId)) {
+        matchingImages.add(imageId);
+      }
+    });
+    return matchingImages;
+  }
 }
