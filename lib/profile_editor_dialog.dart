@@ -144,6 +144,21 @@ class _ProfileEditorDialogState extends State<ProfileEditorDialog> with SingleTi
   bool _showBiographyMode = false;
   bool _initialModeSet = false;
 
+  final ScrollController _manualScrollController = ScrollController();
+
+  // Función para hacer el scroll animado
+  void _scrollToBottomManual() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_manualScrollController.hasClients) {
+        _manualScrollController.animateTo(
+          _manualScrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
   // Formulario Manual
   String? _avatarPathCtrl;
   final _nameCtrl = TextEditingController();
@@ -187,8 +202,14 @@ class _ProfileEditorDialogState extends State<ProfileEditorDialog> with SingleTi
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
+
+    _tabController.addListener(() {
+      if (!_tabController.indexIsChanging) {
+        setState(() {}); 
+      }
+    });
+  
     _localSearchCtrl.addListener(_filterLocalCharacters);
-    
     _loadLocalCharacters();
     _loadCurrentProfiles();
   }
@@ -196,6 +217,7 @@ class _ProfileEditorDialogState extends State<ProfileEditorDialog> with SingleTi
   @override
   void dispose() {
     _tabController.dispose();
+    _manualScrollController.dispose();
     _nameCtrl.dispose();
     _franchiseCtrl.dispose();
     _genderCtrl.dispose();
@@ -817,6 +839,15 @@ class _ProfileEditorDialogState extends State<ProfileEditorDialog> with SingleTi
                                   : Wrap(
                                       spacing: 6, runSpacing: 6,
                                       children: _selectedCharacters.map((c) => InputChip(
+                                        avatar: CircleAvatar(
+                                        backgroundColor: Colors.black26,
+                                        backgroundImage: c.avatarPath != null && File(c.avatarPath!).existsSync()
+                                            ? FileImage(File(c.avatarPath!))
+                                            : null,
+                                        child: c.avatarPath == null || !File(c.avatarPath!).existsSync()
+                                            ? const Icon(Icons.person, size: 14, color: Colors.white54)
+                                            : null,
+                                      ),
                                         label: Text('${c.name} (${c.franchise})', style: const TextStyle(fontSize: 11, color: Colors.white)),
                                         backgroundColor: const Color(0xFF0A84FF).withOpacity(0.2),
                                         onDeleted: () => _toggleLinkCharacter(c),
@@ -879,16 +910,93 @@ class _ProfileEditorDialogState extends State<ProfileEditorDialog> with SingleTi
                                                       final isLinked = _selectedCharacters.any((c) => c.id == char.id);
                                                       return ListTile(
                                                         contentPadding: EdgeInsets.zero,
+                                                        leading: Container(
+                                                          width: 36, height: 36,
+                                                          decoration: BoxDecoration(
+                                                            shape: BoxShape.circle,
+                                                            color: Colors.black26,
+                                                            border: Border.all(color: Colors.white24, width: 1),
+                                                            image: char.avatarPath != null && File(char.avatarPath!).existsSync()
+                                                                ? DecorationImage(image: FileImage(File(char.avatarPath!)), fit: BoxFit.cover)
+                                                                : null,
+                                                          ),
+                                                          child: char.avatarPath == null || !File(char.avatarPath!).existsSync()
+                                                              ? const Icon(Icons.person, color: Colors.white38, size: 20)
+                                                              : null,
+                                                        ),
                                                         title: Text(char.name, style: const TextStyle(color: Colors.white, fontSize: 13)),
                                                         subtitle: Text(char.franchise, style: const TextStyle(color: Colors.white54, fontSize: 11)),
                                                         trailing: Row(
                                                           mainAxisSize: MainAxisSize.min,
                                                           children: [
                                                             IconButton(icon: const Icon(Icons.edit_note, color: Colors.white60, size: 18), onPressed: () => _setupForm(char)),
-                                                            IconButton(icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 18), onPressed: () async {
-                                                              await widget.metadataService.deleteCharacter(char.id!);
-                                                              _loadLocalCharacters(); _loadCurrentProfiles();
-                                                            }),
+                                                            IconButton(
+                                                              icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 18),
+                                                              tooltip: 'Eliminar perfil',
+                                                              onPressed: () async {
+                                                                final bool confirm = await showDialog<bool>(
+                                                                  context: context,
+                                                                  barrierColor: Colors.black.withOpacity(0.4),
+                                                                  builder: (context) => Dialog(
+                                                                    backgroundColor: Colors.transparent,
+                                                                    elevation: 0,
+                                                                    child: ClipRRect(
+                                                                      borderRadius: BorderRadius.circular(14.0),
+                                                                      child: BackdropFilter(
+                                                                        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                                                                        child: Container(
+                                                                          width: 320,
+                                                                          padding: const EdgeInsets.all(24),
+                                                                          decoration: BoxDecoration(
+                                                                            color: const Color(0xFF2C2C2E).withOpacity(0.8),
+                                                                            border: Border.all(color: Colors.white12, width: 0.5),
+                                                                          ),
+                                                                          child: Column(
+                                                                            mainAxisSize: MainAxisSize.min,
+                                                                            children: [
+                                                                              const Text('Eliminar Perfil', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white)),
+                                                                              const SizedBox(height: 16),
+                                                                              Text(
+                                                                                '¿Borrar a "${char.name}"?\nSe desvinculará permanentemente de todas las imágenes.',
+                                                                                textAlign: TextAlign.center,
+                                                                                style: const TextStyle(color: Colors.white70, fontSize: 14),
+                                                                              ),
+                                                                              const SizedBox(height: 24),
+                                                                              Row(
+                                                                                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                                                                children: [
+                                                                                  TextButton(
+                                                                                    onPressed: () => Navigator.pop(context, false),
+                                                                                    style: TextButton.styleFrom(foregroundColor: Colors.white70),
+                                                                                    child: const Text('Cancelar', style: TextStyle(fontWeight: FontWeight.w500)),
+                                                                                  ),
+                                                                                  TextButton(
+                                                                                    onPressed: () => Navigator.pop(context, true),
+                                                                                    style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+                                                                                    child: const Text('Eliminar', style: TextStyle(fontWeight: FontWeight.w600)),
+                                                                                  ),
+                                                                                ],
+                                                                              ),
+                                                                            ],
+                                                                          ),
+                                                                        ),
+                                                                      ),
+                                                                    ),
+                                                                  ),
+                                                                ) ?? false;
+
+                                                                // Solo elimina si el usuario confirmó
+                                                                if (confirm) {
+                                                                  await widget.metadataService.deleteCharacter(char.id!);
+                                                                  _loadLocalCharacters(); 
+                                                                  _loadCurrentProfiles();
+                                                                  
+                                                                  if (mounted) {
+                                                                    showGlassSnackBar(context, 'Perfil eliminado correctamente.', icon: Icons.delete_outline);
+                                                                  }
+                                                                }
+                                                              },
+                                                            ),
                                                             Checkbox(value: isLinked, activeColor: const Color(0xFF0A84FF), onChanged: (_) => _toggleLinkCharacter(char))
                                                           ],
                                                         ),
@@ -901,6 +1009,7 @@ class _ProfileEditorDialogState extends State<ProfileEditorDialog> with SingleTi
 
                                   // --- PESTAÑA 2: FORMULARIO MANUAL (CON AUTOCOMPLETADO) ---
                                   SingleChildScrollView(
+                                    controller: _manualScrollController,
                                     physics: const BouncingScrollPhysics(),
                                     child: Column(
                                       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -973,7 +1082,7 @@ class _ProfileEditorDialogState extends State<ProfileEditorDialog> with SingleTi
                                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                           children: [
                                             const Text('Campos Extra Personalizados', style: TextStyle(fontSize: 12, color: Colors.white54)),
-                                            TextButton.icon(onPressed: () => setState(() { _customKeysCtrls.add(TextEditingController()); _customValuesCtrls.add(TextEditingController()); }), icon: const Icon(Icons.add, size: 12), label: const Text('Añadir campo', style: TextStyle(fontSize: 11)))
+                                            TextButton.icon(onPressed: () => setState(() { _customKeysCtrls.add(TextEditingController()); _customValuesCtrls.add(TextEditingController()); _scrollToBottomManual();}), icon: const Icon(Icons.add, size: 12), label: const Text('Añadir campo', style: TextStyle(fontSize: 11)))
                                           ],
                                         ),
                                         ...List.generate(_customKeysCtrls.length, (idx) => Row(
@@ -984,8 +1093,22 @@ class _ProfileEditorDialogState extends State<ProfileEditorDialog> with SingleTi
                                             IconButton(icon: const Icon(Icons.remove_circle, color: Colors.redAccent, size: 16), onPressed: () => setState(() { _customKeysCtrls.removeAt(idx).dispose(); _customValuesCtrls.removeAt(idx).dispose(); }))
                                           ],
                                         )),
+                                        if (_customKeysCtrls.isNotEmpty)
+                                          Align(
+                                            alignment: Alignment.centerRight,
+                                            child: TextButton.icon(
+                                              onPressed: () {
+                                                setState(() { 
+                                                  _customKeysCtrls.add(TextEditingController()); 
+                                                  _customValuesCtrls.add(TextEditingController()); 
+                                                });
+                                                _scrollToBottomManual(); // <-- AÑADE ESTO
+                                              }, 
+                                              icon: const Icon(Icons.add, size: 12), 
+                                              label: const Text('Añadir otro campo', style: TextStyle(fontSize: 11))
+                                            ),
+                                          ),
                                         const SizedBox(height: 12),
-                                        ElevatedButton(onPressed: _saveForm, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0A84FF), foregroundColor: Colors.white), child: const Text('Guardar Cambios Localmente')),
                                       ],
                                     ),
                                   ),
@@ -1039,15 +1162,19 @@ class _ProfileEditorDialogState extends State<ProfileEditorDialog> with SingleTi
                   children: [
                     TextButton(
                       onPressed: () {
-                        // Si estamos gestionando y hay perfiles, volver a la bio es más cómodo.
-                        if (!_showBiographyMode && hasProfiles) {
+                        // Si estamos en la pestaña Manual (índice 1) y no estamos viendo la biografía, ejecuta el guardado
+                        if (!_showBiographyMode && _tabController.index == 1) {
+                          _saveForm();
+                        } else if (!_showBiographyMode && hasProfiles) {
                           setState(() => _showBiographyMode = true);
                         } else {
                           Navigator.pop(context);
                         }
                       }, 
                       child: Text(
-                        (!_showBiographyMode && hasProfiles) ? 'Ver Biografía' : 'Finalizar Gestión', 
+                        (!_showBiographyMode && _tabController.index == 1)
+                            ? 'Guardar'
+                            : ((!_showBiographyMode && hasProfiles) ? 'Ver Biografía' : 'Finalizar Gestión'), 
                         style: const TextStyle(color: Color(0xFF0A84FF), fontWeight: FontWeight.bold)
                       )
                     )

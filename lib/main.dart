@@ -139,7 +139,7 @@ void main(List<String> args) async {
 
   WindowOptions windowOptions = const WindowOptions(
     size: Size(800, 600),
-    minimumSize: Size(500, 400),
+    minimumSize: Size(800, 600),
     center: true,
     backgroundColor: Colors.black,
     skipTaskbar: false,
@@ -539,6 +539,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   late Directory _currentVaultDir;
   late Directory _vaultRootDir;
   final TextEditingController _folderNameController = TextEditingController();
+  int _loadGeneration = 0;
 
   bool _isDraggingExternal = false;
 
@@ -973,6 +974,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   }
 
   Future<void> _loadVaultContents({bool quiet = false}) async {
+    final int myGeneration = ++_loadGeneration;
+
     if (!quiet) {
       setState(() => _isLoading = true);
     }
@@ -982,6 +985,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     }
 
     final contents = await _currentVaultDir.list().toList();
+
+    if (myGeneration != _loadGeneration) return;
 
     final Map<String, int> sizeCache = {};
     final Map<String, String> nameCache = {};
@@ -1016,6 +1021,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
       }
       await Future.wait(ioTasks);
     }
+
+    if (myGeneration != _loadGeneration) return;
 
     contents.sort((a, b) {
       // Las carpetas siempre van primero
@@ -1334,6 +1341,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
           }
         });
       } else if (reloadUI) {
+        await Future.delayed(const Duration(milliseconds: 150));
         await _loadVaultContents(quiet: true);
       }
     } catch (e) {
@@ -2726,12 +2734,6 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                 onPressed: () => _showSortMenu(context),
               ),
           IconButton(
-            icon: const Icon(Icons.settings_outlined),
-            tooltip: 'Ajustes',
-            onPressed: _openSettings,
-          ),
-          ///// NUEVO: Botón para escanear y limpiar duplicados
-          IconButton(
   icon: const Icon(Icons.cleaning_services_outlined),
   tooltip: 'Limpiar duplicados',
   onPressed: () async {
@@ -2761,6 +2763,13 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     }
   },
 ),
+          IconButton(
+            icon: const Icon(Icons.settings_outlined),
+            tooltip: 'Ajustes',
+            onPressed: _openSettings,
+          ),
+          ///// NUEVO: Botón para escanear y limpiar duplicados
+          
         ],
       ),
       
@@ -4927,6 +4936,21 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                 onPressed: _cerrarVisor,
               ),
               actions: [
+                IconButton(
+                  icon: const Icon(Icons.person_outline, color: Colors.white),
+                  tooltip: 'Perfil',
+                  onPressed: () {
+                    showDialog(
+                      context: context,
+                      barrierColor: Colors.transparent,
+                      builder: (context) => ProfileEditorDialog(
+                        imageIds: [imageId],
+                        metadataService: widget.metadataService,
+                        vaultRootPath: widget.vaultRootPath,
+                      ),
+                    ).then((_) => setState(() {})); 
+                  },
+                ),
                 // 1. Botón de Etiquetas
                 IconButton(
                   icon: const Icon(Icons.label_outline, color: Colors.white),
@@ -5098,6 +5122,28 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
+                            Container(
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.5),
+                                shape: BoxShape.circle,
+                              ),
+                              child: IconButton(
+                                icon: const Icon(Icons.person_outline, color: Colors.white),
+                                tooltip: 'Perfil',
+                                onPressed: () {
+                                  showDialog(
+                                    context: context,
+                                    barrierColor: Colors.transparent,
+                                    builder: (context) => ProfileEditorDialog(
+                                      imageIds: [imageId],
+                                      metadataService: widget.metadataService,
+                                      vaultRootPath: widget.vaultRootPath,
+                                    ),
+                                  ).then((_) => setState(() {})); 
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 12),
                             // Botón de Etiquetas Flotante
                             Container(
                               decoration: BoxDecoration(

@@ -1,22 +1,23 @@
 import 'dart:io';
 import 'dart:isolate';
-import 'main.dart';
+import 'dart:ui'; // Para el ImageFilter.blur
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:image/image.dart' as img;
+
+import 'main.dart';
 import 'metadata_service.dart';
 import 'thumbnail_service.dart';
-import 'ui_utils.dart'; // Para tu showGlassSnackBar
-import 'package:image/image.dart' as img;
-import 'package:path_provider/path_provider.dart';
+import 'ui_utils.dart'; 
 
 // --- MODELO DE DATOS ---
 class DuplicateGroup {
   List<File> files;
   File bestFile;
-  Set<String> pathsToDelete; // <-- Estado dinámico de selección
+  Set<String> pathsToDelete;
 
   DuplicateGroup({required this.files, required this.bestFile}) 
-    // Por defecto, marcamos para eliminar todo MENOS el mejor archivo
     : pathsToDelete = files.where((f) => f.path != bestFile.path).map((f) => f.path).toSet();
 }
 
@@ -44,9 +45,11 @@ class _DuplicateScannerScreenState extends State<DuplicateScannerScreen> {
   String _etaText = "Calculando...";
   List<DuplicateGroup> _duplicateGroups = [];
   
-  // Guardamos referencias para limpiar la memoria si el usuario sale antes de terminar
   ReceivePort? _receivePort;
   Isolate? _isolate;
+
+  // Calculador global de seleccionados
+  int get _totalMarkedToDelete => _duplicateGroups.fold(0, (sum, group) => sum + group.pathsToDelete.length);
 
   @override
   void initState() {
@@ -56,39 +59,28 @@ class _DuplicateScannerScreenState extends State<DuplicateScannerScreen> {
 
   @override
   void dispose() {
-    // Si el usuario cierra la ventana, matamos el proceso en segundo plano
     _receivePort?.close();
     _isolate?.kill(priority: Isolate.immediate);
     super.dispose();
   }
 
-  // Función para formatear el tiempo restante de forma amigable
   String _formatETA(double etaMs) {
     if (etaMs < 0 || etaMs.isNaN) return "Calculando...";
     final duration = Duration(milliseconds: etaMs.toInt());
     if (duration.inMinutes > 0) {
-      return "${duration.inMinutes} min ${duration.inSeconds.remainder(60)} seg restantes";
+      return "${duration.inMinutes} min ${duration.inSeconds.remainder(60)} seg";
     }
-    return "${duration.inSeconds} seg restantes";
+    return "${duration.inSeconds} seg";
   }
 
   Future<void> _startScan() async {
     try {
       final allEntities = await widget.vaultDir.list(recursive: true).toList();
       final imageFiles = allEntities.whereType<File>().where((file) {
-        // 1. Descubrimos la extensión real (aunque esté cifrada en .vtx)
         final realExt = _getRealExtensionForScanner(file.path);
-        
-        // 2. Rechazamos todos los videos inmediatamente
         if (['.mp4', '.mov', '.avi', '.mkv', '.webm'].contains(realExt)) return false;
-        
-        // 3. Rechazamos los GIFs (siempre son animados)
         if (realExt == '.gif') return false;
-        
-        // 4. Rechazamos los WebP solo si descubrimos que tienen movimiento
         if (realExt == '.webp' && _isAnimatedWebp(file.path)) return false;
-
-        // 5. Si sobrevivió a todo lo anterior, aceptamos solo si es una imagen estática válida
         return ['.jpg', '.jpeg', '.png', '.webp', '.bmp'].contains(realExt);
       }).toList();
 
@@ -98,14 +90,10 @@ class _DuplicateScannerScreenState extends State<DuplicateScannerScreen> {
       }
 
       final paths = imageFiles.map((e) => e.path).toList();
-
-      // --- NUEVO: Obtenemos la ruta exacta de la carpeta thumbnails de GVortex ---
       final supportDir = await getApplicationSupportDirectory();
       final thumbDirPath = p.join(supportDir.path, 'thumbnails');
 
       _receivePort = ReceivePort();
-
-      // Pasamos thumbDirPath como el tercer argumento de nuestra lista
       _isolate = await Isolate.spawn(vortexScannerWorker, [_receivePort!.sendPort, paths, thumbDirPath]);
 
       _receivePort!.listen((message) {
@@ -116,15 +104,14 @@ class _DuplicateScannerScreenState extends State<DuplicateScannerScreen> {
             setState(() {
               _progress = message['progress'];
               _etaText = _formatETA(message['etaMs']);
-              _statusText = "Analizando ${message['processed']} de ${message['total']} imágenes...";
+              _statusText = "Analizando ${message['processed']} de ${message['total']} imágenes";
             });
           } 
-          // ... (El resto del código de los listeners se queda exactamente igual)
           else if (type == 'status') {
             setState(() {
               _progress = 1.0;
               _statusText = message['message'];
-              _etaText = "Casi listo...";
+              _etaText = "Casi listo";
             });
           } 
           else if (type == 'done') {
@@ -147,43 +134,72 @@ class _DuplicateScannerScreenState extends State<DuplicateScannerScreen> {
           }
         }
       });
-
     } catch (e) {
       if (mounted) {
         setState(() => _isScanning = false);
-        showGlassSnackBar(context, 'Error al escanear: $e', icon: Icons.error_outline, iconColor: Colors.redAccent);
+        showGlassSnackBar(context, 'Error al escanear: $e', icon: Icons.error_outline);
       }
     }
   }
 
-  // (Conserva aquí tu función _keepBestAndRemoveRest tal y como la tienes)
-  Future<void> _deleteSelectedInGroup(DuplicateGroup group) async {
-    final filesToDelete = group.pathsToDelete.map((path) => File(path)).toList();
-    if (filesToDelete.isEmpty) return;
+  // --- BORRADO GLOBAL OPTIMIZADO ---
+  Future<void> _deleteAllSelected() async {
+    int deletedCount = 0;
+    int failedCount = 0; // Para contar los que Windows no quiso soltar
+    
+    // Clonamos la lista para iterar sin alterar el for
+    for (var group in _duplicateGroups.toList()) {
+      final filesToDelete = group.pathsToDelete.map((path) => File(path)).toList();
+      if (filesToDelete.isEmpty) continue;
 
-    for (final file in filesToDelete) {
-      final imageId = p.relative(file.path, from: widget.vaultDir.path);
-      await widget.metadataService.deleteMetadata(imageId);
-      await widget.thumbnailService.clearThumbnail(p.basename(file.path));
-      if (await file.exists()) await file.delete();
+      for (final file in filesToDelete) {
+        try {
+          final imageId = p.relative(file.path, from: widget.vaultDir.path);
+          
+          // 1. Expulsamos la imagen de la memoria caché de Flutter
+          await FileImage(file).evict();
+          
+          // 2. Le damos a Windows 150 milisegundos para soltar el bloqueo
+          await Future.delayed(const Duration(milliseconds: 150));
+
+          if (await file.exists()) {
+            await file.delete(); // Ahora sí, lo borramos
+          }
+          
+          // 3. Borramos metadatos y miniaturas solo si el borrado físico tuvo éxito
+          await widget.metadataService.deleteMetadata(imageId);
+          await widget.thumbnailService.clearThumbnail(p.basename(file.path));
+          
+          deletedCount++;
+        } catch (e) {
+          debugPrint("No se pudo borrar el archivo (Bloqueado): ${file.path}");
+          failedCount++;
+          // Si falla, lo desmarcamos para que no cause errores gráficos
+          group.pathsToDelete.remove(file.path);
+        }
+      }
+
+      setState(() {
+        // Limpiamos los exitosos de la interfaz
+        group.files.removeWhere((f) => !f.existsSync());
+        group.pathsToDelete.clear();
+        
+        if (group.files.length <= 1) {
+          _duplicateGroups.remove(group);
+        } else {
+          group.files.sort((a, b) => b.lengthSync().compareTo(a.lengthSync()));
+          group.bestFile = group.files.first;
+        }
+      });
     }
 
-    setState(() {
-      // 1. Quitamos los archivos borrados de la lista
-      group.files.removeWhere((f) => group.pathsToDelete.contains(f.path));
-      group.pathsToDelete.clear();
-      
-      // 2. Si queda 1 o ninguno, ya no es un duplicado, desaparece la tarjeta entera
-      if (group.files.length <= 1) {
-        _duplicateGroups.remove(group);
-      } else {
-        // 3. Si quedaron 2 o más, recalculamos cuál es el "mejor" ahora
-        group.files.sort((a, b) => b.lengthSync().compareTo(a.lengthSync()));
-        group.bestFile = group.files.first;
+    if (mounted) {
+      if (failedCount > 0) {
+        showGlassSnackBar(context, '$deletedCount eliminados. $failedCount estaban en uso por Windows.', icon: Icons.warning_amber_rounded, iconColor: Colors.amber);
+      } else if (deletedCount > 0) {
+        showGlassSnackBar(context, '$deletedCount elementos depurados del Vórtice.', icon: Icons.auto_delete_outlined);
       }
-    });
-
-    if (mounted) showGlassSnackBar(context, '${filesToDelete.length} duplicados eliminados.', icon: Icons.delete_sweep);
+    }
   }
 
   @override
@@ -201,48 +217,40 @@ class _DuplicateScannerScreenState extends State<DuplicateScannerScreen> {
     );
   }
 
-  // --- NUEVA INTERFAZ DE CARGA CON BARRA DE PROGRESO ---
   Widget _buildLoadingState() {
     return Center(
       child: Container(
         width: 400,
         padding: const EdgeInsets.all(32),
         decoration: BoxDecoration(
-          color: const Color(0xFF1C1C1E),
+          color: const Color(0xFF151515),
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: Colors.white12, width: 0.5),
-          boxShadow: [
-            BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 20, offset: const Offset(0, 10))
-          ]
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            const Icon(Icons.saved_search_rounded, size: 60, color: Color(0xFF0A84FF)),
+            const Icon(Icons.layers_clear_outlined, size: 60, color: Colors.white70),
             const SizedBox(height: 24),
-            Text(_statusText, style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
+            Text(_statusText, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500)),
             const SizedBox(height: 24),
-            
-            // Barra de progreso animada
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
               child: LinearProgressIndicator(
                 value: _progress > 0 ? _progress : null,
-                minHeight: 8,
-                backgroundColor: Colors.white12,
+                minHeight: 6,
+                backgroundColor: Colors.white10,
                 valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF0A84FF)),
               ),
             ),
             const SizedBox(height: 16),
-            
-            // Textos descriptivos (Porcentaje y ETA)
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
                   '${(_progress * 100).toStringAsFixed(1)}%', 
-                  style: const TextStyle(color: Color(0xFF0A84FF), fontWeight: FontWeight.bold, fontSize: 13)
+                  style: const TextStyle(color: Colors.white70, fontSize: 12)
                 ),
                 Text(
                   _etaText, 
@@ -256,78 +264,151 @@ class _DuplicateScannerScreenState extends State<DuplicateScannerScreen> {
     );
   }
 
-  // (Conserva aquí tus funciones _buildResultsState y _buildDuplicateCard)
   Widget _buildResultsState() {
     if (_duplicateGroups.isEmpty) {
       return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.check_circle_outline, size: 80, color: Color(0xFF32D74B)),
+            Icon(Icons.check_circle_outline, size: 60, color: Colors.white54),
             SizedBox(height: 16),
-            Text('¡Tu bóveda está limpia!', style: TextStyle(fontSize: 18, color: Colors.white)),
+            Text('Vórtice optimizado', style: TextStyle(fontSize: 16, color: Colors.white)),
             SizedBox(height: 8),
-            Text('No se encontraron imágenes duplicadas.', style: TextStyle(color: Colors.white54)),
+            Text('No se encontraron imágenes redundantes.', style: TextStyle(color: Colors.white38, fontSize: 13)),
           ],
         ),
       );
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: _duplicateGroups.length,
-      itemBuilder: (context, index) {
-        final group = _duplicateGroups[index];
-        return _buildDuplicateCard(group);
-      },
+    return Stack(
+      children: [
+        ListView.builder(
+          padding: const EdgeInsets.only(left: 16, right: 16, top: 16, bottom: 100), // Espacio para el panel inferior
+          itemCount: _duplicateGroups.length,
+          itemBuilder: (context, index) {
+            final group = _duplicateGroups[index];
+            return _buildDuplicateCard(group);
+          },
+        ),
+        
+        // --- BARRA FLOTANTE GLOBAL (Elegante y no intrusiva) ---
+        if (_totalMarkedToDelete > 0)
+          Positioned(
+            bottom: 24, left: 0, right: 0,
+            child: Center(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(30),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF252525).withOpacity(0.85),
+                      borderRadius: BorderRadius.circular(30),
+                      border: Border.all(color: Colors.white12, width: 0.5),
+                      boxShadow: [
+                        BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 20, offset: const Offset(0, 10))
+                      ]
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.auto_delete_outlined, color: Colors.white70, size: 20),
+                        const SizedBox(width: 12),
+                        Text(
+                          '$_totalMarkedToDelete elementos seleccionados', 
+                          style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500)
+                        ),
+                        const SizedBox(width: 24),
+                        ElevatedButton(
+                          onPressed: _deleteAllSelected,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.white,
+                            foregroundColor: Colors.black,
+                            elevation: 0,
+                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                          ),
+                          child: const Text('Eliminar', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                        )
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          )
+      ],
     );
   }
 
   Widget _buildDuplicateCard(DuplicateGroup group) {
-    final toDeleteCount = group.pathsToDelete.length;
-
     return Container(
       margin: const EdgeInsets.only(bottom: 24),
       decoration: BoxDecoration(
-        color: const Color(0xFF1C1C1E),
+        color: const Color(0xFF151515),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white12, width: 0.5),
+        border: Border.all(color: Colors.white10, width: 0.5),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
-            padding: const EdgeInsets.all(12.0),
+            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
             child: Row(
               children: [
-                const Icon(Icons.content_copy, color: Colors.amber, size: 18),
-                const SizedBox(width: 8),
-                Text('${group.files.length} Archivos similares', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                const Icon(Icons.difference_outlined, color: Colors.white54, size: 18),
+                const SizedBox(width: 10),
+                Text('${group.files.length} Coincidencias detectadas', style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
                 const Spacer(),
                 
-                // Botón interactivo de borrado
-                ElevatedButton.icon(
-                  onPressed: toDeleteCount > 0 ? () => _deleteSelectedInGroup(group) : null,
-                  icon: const Icon(Icons.delete_outline, size: 16),
-                  label: Text('Eliminar $toDeleteCount seleccionados'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.redAccent.withOpacity(0.2),
-                    foregroundColor: Colors.redAccent,
-                    disabledForegroundColor: Colors.white24,
-                    disabledBackgroundColor: Colors.white12,
-                    elevation: 0,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                  ),
+                // Menú QoL (Calidad de Vida) por grupo
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_horiz, color: Colors.white54, size: 20),
+                  color: const Color(0xFF2C2C2E),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8), side: const BorderSide(color: Colors.white12, width: 0.5)),
+                  tooltip: 'Opciones de selección',
+                  onSelected: (val) {
+                    setState(() {
+                      if (val == 'auto') {
+                        group.pathsToDelete = group.files.where((f) => f.path != group.bestFile.path).map((f) => f.path).toSet();
+                      } else if (val == 'clear') {
+                        group.pathsToDelete.clear();
+                      }
+                    });
+                  },
+                  itemBuilder: (context) => [
+                    const PopupMenuItem(
+                      value: 'auto', 
+                      child: Row(
+                        children: [
+                          Icon(Icons.auto_awesome, size: 16, color: Colors.white70),
+                          SizedBox(width: 10),
+                          Text('Conservar de mayor resolución', style: TextStyle(fontSize: 13, color: Colors.white)),
+                        ],
+                      )
+                    ),
+                    const PopupMenuItem(
+                      value: 'clear', 
+                      child: Row(
+                        children: [
+                          Icon(Icons.deselect, size: 16, color: Colors.white70),
+                          SizedBox(width: 10),
+                          Text('Desmarcar todos', style: TextStyle(fontSize: 13, color: Colors.white)),
+                        ],
+                      )
+                    ),
+                  ]
                 )
               ],
             ),
           ),
-          const Divider(height: 1, color: Colors.white12),
+          const Divider(height: 1, color: Colors.white10),
           SizedBox(
-            height: 180,
+            height: 190,
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(16),
               itemCount: group.files.length,
               itemBuilder: (context, idx) {
                 final file = group.files[idx];
@@ -336,20 +417,32 @@ class _DuplicateScannerScreenState extends State<DuplicateScannerScreen> {
                 final sizeMB = (file.lengthSync() / (1024 * 1024)).toStringAsFixed(2);
 
                 return GestureDetector(
-                  // --- LA MAGIA DE LA COMPARACIÓN: ABRE EL VISOR EN MODO INSTANTÁNEO ---
                   onTap: () {
+                    // Acción primaria ahora es seleccionar/deseleccionar para mayor fluidez.
+                    // Si se quiere ver la imagen completa, se usará long press o doble tap (o al revés, según prefieras).
+                    // Para mantener la lógica visual, asignaré la selección al tap normal.
+                    setState(() {
+                      if (isMarkedToDelete) {
+                        group.pathsToDelete.remove(file.path);
+                      } else {
+                        group.pathsToDelete.add(file.path);
+                      }
+                    });
+                  },
+                  onDoubleTap: () {
+                    // Doble tap para comparar a pantalla completa
                     Navigator.push(
                       context,
                       PageRouteBuilder(
                         transitionDuration: const Duration(milliseconds: 300),
                         opaque: false,
                         pageBuilder: (context, _, __) => FullScreenImageViewer(
-                          imageFiles: group.files, // Solo le pasa las imágenes de este grupo
+                          imageFiles: group.files, 
                           initialIndex: idx,
-                          instantTransition: true, // Corte de cámara directo
+                          instantTransition: true, 
                           vaultRootPath: widget.vaultDir.path,
                           metadataService: widget.metadataService,
-                          exportCallback: (f) async {}, // Dummy
+                          exportCallback: (f) async {}, 
                           onClose: () => Navigator.pop(context),
                         )
                       )
@@ -362,9 +455,9 @@ class _DuplicateScannerScreenState extends State<DuplicateScannerScreen> {
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(
                         color: isMarkedToDelete 
-                            ? Colors.redAccent.withOpacity(0.5) 
-                            : isBest ? const Color(0xFF32D74B) : Colors.transparent, 
-                        width: 2
+                            ? Colors.white54 
+                            : isBest ? Colors.transparent : Colors.transparent, 
+                        width: isMarkedToDelete ? 1.5 : 0
                       ),
                     ),
                     child: Stack(
@@ -380,8 +473,8 @@ class _DuplicateScannerScreenState extends State<DuplicateScannerScreen> {
                                   color: const Color(0xFF1C1C1E),
                                   child: const Center(
                                     child: SizedBox(
-                                      width: 20, height: 20, 
-                                      child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF0A84FF))
+                                      width: 16, height: 16, 
+                                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white24)
                                     )
                                   ),
                                 );
@@ -390,68 +483,62 @@ class _DuplicateScannerScreenState extends State<DuplicateScannerScreen> {
                                 snapshot.data!,
                                 fit: BoxFit.cover,
                                 cacheWidth: 300,
-                                errorBuilder: (context, error, stackTrace) {
-                                  return Container(
-                                    color: const Color(0xFF1C1C1E),
-                                    child: const Center(
-                                      child: Icon(Icons.broken_image, color: Colors.white24, size: 30)
-                                    ),
-                                  );
-                                },
+                                errorBuilder: (context, error, stackTrace) => Container(
+                                  color: const Color(0xFF1C1C1E),
+                                  child: const Center(child: Icon(Icons.broken_image, color: Colors.white24, size: 30)),
+                                ),
                               );
                             },
                           ),
                         ),
                         
-                        // Sombreado rojo si está marcada para borrar
+                        // Sombreado elegante para los descartados
                         if (isMarkedToDelete)
                           Container(
                             decoration: BoxDecoration(
-                              color: Colors.redAccent.withOpacity(0.2),
+                              color: Colors.black.withOpacity(0.65),
                               borderRadius: BorderRadius.circular(6)
                             )
                           ),
 
-                        // --- BOTÓN CHECKBOX PARA SELECCIONAR/DESELECCIONAR ---
+                        // --- CHECKBOX MINIMALISTA ---
                         Positioned(
                           top: 8, right: 8,
-                          child: GestureDetector(
-                            onTap: () {
-                              setState(() {
-                                if (isMarkedToDelete) {
-                                  group.pathsToDelete.remove(file.path);
-                                } else {
-                                  group.pathsToDelete.add(file.path);
-                                }
-                              });
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.all(4),
-                              decoration: BoxDecoration(
-                                color: isMarkedToDelete ? Colors.redAccent : Colors.black54,
-                                shape: BoxShape.circle,
-                                border: Border.all(color: Colors.white, width: 1.5)
-                              ),
-                              child: Icon(
-                                isMarkedToDelete ? Icons.close : Icons.check,
-                                size: 16, color: Colors.white
-                              ),
+                          child: Container(
+                            padding: const EdgeInsets.all(2),
+                            decoration: BoxDecoration(
+                              color: isMarkedToDelete ? Colors.white : Colors.black45,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: Colors.white, width: 1.5)
+                            ),
+                            child: Icon(
+                              Icons.check,
+                              size: 14, 
+                              color: isMarkedToDelete ? Colors.black : Colors.transparent
                             ),
                           ),
                         ),
 
-                        // Textos inferiores
+                        // Gradiente inferior para legibilidad
                         Positioned(
                           bottom: 0, left: 0, right: 0,
                           child: Container(
-                            padding: const EdgeInsets.all(4),
-                            color: Colors.black.withOpacity(0.85),
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                            decoration: BoxDecoration(
+                              borderRadius: const BorderRadius.only(bottomLeft: Radius.circular(6), bottomRight: Radius.circular(6)),
+                              gradient: LinearGradient(
+                                begin: Alignment.bottomCenter, end: Alignment.topCenter,
+                                colors: [Colors.black.withOpacity(0.8), Colors.transparent],
+                              ),
+                            ),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text('$sizeMB MB', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
-                                if (isBest && !isMarkedToDelete) const Text('Sugerido', style: TextStyle(color: Color(0xFF32D74B), fontSize: 10, fontWeight: FontWeight.bold)),
-                                if (isMarkedToDelete) const Text('Se eliminará', style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                                Text('$sizeMB MB', style: TextStyle(color: isMarkedToDelete ? Colors.white54 : Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                                if (isBest && !isMarkedToDelete) 
+                                  const Text('Recomendado', style: TextStyle(color: Colors.white70, fontSize: 10, fontWeight: FontWeight.w500)),
+                                if (isMarkedToDelete) 
+                                  const Text('Descartado', style: TextStyle(color: Colors.white54, fontSize: 10, decoration: TextDecoration.lineThrough)),
                               ],
                             ),
                           ),
@@ -469,12 +556,14 @@ class _DuplicateScannerScreenState extends State<DuplicateScannerScreen> {
   }
 }
 
-// Pon esto hasta abajo, FUERA de cualquier clase
+// --- LÓGICA DE ESCANEO (BACKGROUND) ---
+// Se mantiene intacta al no estar relacionada con la UI directamente, 
+// pero se adjunta para mantener el archivo autosuficiente.
+
 Future<List<List<String>>> findDuplicatesBackground(List<String> paths) async {
   final List<List<String>> groups = [];
   final Map<String, String> hashMap = {}; 
 
-  // FASE 1: Calcular la huella digital (dHash)
   for (final path in paths) {
     try {
       final bytes = File(path).readAsBytesSync();
@@ -494,12 +583,9 @@ Future<List<List<String>>> findDuplicatesBackground(List<String> paths) async {
         }
         hashMap[path] = hash;
       }
-    } catch (_) {
-      // Ignoramos archivos corruptos
-    }
+    } catch (_) {}
   }
 
-  // FASE 2: Comparar las huellas
   final Set<String> processed = {};
   final pathsWithHashes = hashMap.keys.toList();
 
@@ -521,7 +607,6 @@ Future<List<List<String>>> findDuplicatesBackground(List<String> paths) async {
         if (hash1[k] != hash2[k]) distance++;
       }
 
-      // Nivel de tolerancia (5 bits de diferencia)
       if (distance <= 5) {
         currentGroup.add(path2);
         processed.add(path2);
@@ -536,8 +621,6 @@ Future<List<List<String>>> findDuplicatesBackground(List<String> paths) async {
 
   return groups;
 }
-
-// --- FUNCIONES AUXILIARES DE FILTRADO ---
 
 String _decipherExtension(String ciphered) {
   String result = '';
@@ -568,24 +651,29 @@ String _getRealExtensionForScanner(String path) {
 }
 
 bool _isAnimatedWebp(String filePath) {
+  RandomAccessFile? raf;
   try {
     final file = File(filePath);
-    final raf = file.openSync(mode: FileMode.read);
+    raf = file.openSync(mode: FileMode.read);
     final header = raf.readSync(21); 
-    raf.closeSync();
     if (header.length >= 21) {
       final isWebP = String.fromCharCodes(header.sublist(8, 12)) == 'WEBP';
       final isVP8X = String.fromCharCodes(header.sublist(12, 16)) == 'VP8X';
       if (isWebP && isVP8X) return (header[20] & 0x02) != 0;
     }
-  } catch (_) {}
+  } catch (_) {
+    // Ignoramos el error, pero pasamos al finally
+  } finally {
+    // ESTO ES CLAVE: Asegura que Windows libere el archivo siempre
+    try { raf?.closeSync(); } catch (_) {}
+  }
   return false;
 }
 
 void vortexScannerWorker(List<dynamic> args) {
   final SendPort sendPort = args[0];
   final List<String> paths = args[1];
-  final String thumbnailsDir = args[2]; // <-- NUEVO: Recibimos la ruta de miniaturas
+  final String thumbnailsDir = args[2]; 
   
   final List<List<String>> groups = [];
   final Map<String, String> hashMap = {}; 
@@ -596,22 +684,16 @@ void vortexScannerWorker(List<dynamic> args) {
   for (int i = 0; i < totalFiles; i++) {
     final path = paths[i];
     try {
-      // --- SUPER OPTIMIZACIÓN 1: LEER MINIATURAS ---
-      // Calculamos cómo se llama la miniatura de este archivo en GVortex
       final baseName = p.basenameWithoutExtension(path);
       final thumbPath = p.join(thumbnailsDir, '$baseName.thumb.vtx');
       
-      // Si la miniatura existe, leemos esa (100x más rápido). Si no, usamos el original.
       final fileToRead = File(thumbPath).existsSync() ? File(thumbPath) : File(path);
 
       final bytes = fileToRead.readAsBytesSync();
       final image = img.decodeImage(bytes);
       
       if (image != null) {
-        // --- SUPER OPTIMIZACIÓN 2: ORDEN MATEMÁTICO ---
-        // 1. Primero encogemos a 9x8 (Destruye millones de píxeles innecesarios en microsegundos)
         final resized = img.copyResize(image, width: 9, height: 8);
-        // 2. LUEGO pasamos a blanco y negro (Solo procesa 72 píxeles)
         final grayscale = img.grayscale(resized);
         
         String hash = '';
@@ -624,14 +706,10 @@ void vortexScannerWorker(List<dynamic> args) {
         }
         hashMap[path] = hash;
       }
-    } catch (_) {
-      // Ignoramos archivos corruptos
-    }
+    } catch (_) {}
 
-    // --- REPORTE DE PROGRESO (Igual que antes) ---
     final processed = i + 1;
     
-    // Solo enviamos actualización a la UI cada 50 imágenes o al final para no saturar el canal de comunicación
     if (processed % 50 == 0 || processed == totalFiles) {
       final progress = processed / totalFiles;
       final elapsedMs = DateTime.now().difference(startTime).inMilliseconds;
@@ -649,7 +727,6 @@ void vortexScannerWorker(List<dynamic> args) {
     }
   }
 
-  // FASE 2: Comparar las huellas (Esto es casi instantáneo)
   sendPort.send({
     'type': 'status',
     'message': 'Cruzando datos y buscando coincidencias...'
