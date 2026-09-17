@@ -17,6 +17,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:local_notifier/local_notifier.dart';
 import 'dart:ui';
+import 'dart:convert';
 import 'package:google_fonts/google_fonts.dart';
 import 'dart:ffi' hide Size;
 import 'ui_utils.dart';
@@ -52,7 +53,7 @@ final ValueNotifier<int> autoHideNotifier = ValueNotifier<int>(5);
 final ValueNotifier<bool> isVideoPlayingNotifier = ValueNotifier<bool>(false);
 
 enum SortCriteria { date, name, size }
-
+enum ProfileFilter { all, withProfile, withoutProfile }
 enum CloseAction { exit, minimize }
 
 void main(List<String> args) async {
@@ -552,6 +553,8 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   static List<FileSystemEntity> _clipboard = [];
 
   int _focusedIndex = -1;
+  int _lastColumnCount = 0;
+  double _lastItemHeight = 0.0;
 
   bool get isWatcherPaused => _isWatcherPaused;
 
@@ -590,6 +593,11 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
+
+  // State para filtrado por perfil
+  ProfileFilter _currentProfileFilter = ProfileFilter.all;
+  final GlobalKey _filterButtonKey = GlobalKey();
+  OverlayEntry? _filterOverlay;
 
   // NUEVO: FocusNode para la cuadrícula
   final FocusNode _gridFocusNode = FocusNode();
@@ -630,45 +638,55 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     });
   }
 
-  void _applySearchFilter() {
-    if (_searchQuery.isEmpty) {
-      _filteredVaultContents = List.from(_vaultContents);
-      return;
-    }
-
+  // Añadimos {bool resetScroll = false}
+  void _applySearchFilter({bool resetScroll = false}) {
     final query = _searchQuery.toLowerCase();
+    
     _filteredVaultContents = _vaultContents.where((entity) {
       if (entity is Directory) {
+        if (_currentProfileFilter != ProfileFilter.all) return false;
+        if (query.isEmpty) return true;
         return p.basename(entity.path).toLowerCase().contains(query);
       } else if (entity is File) {
-        // Buscar por nombre limpio
-        final cleanName =
-            _getDeobfuscatedName(p.basename(entity.path)).toLowerCase();
+        
+        // --- 1. Filtro por Perfil ---
+        if (_currentProfileFilter != ProfileFilter.all) {
+          final imageId = p.relative(entity.path, from: _vaultRootDir.path);
+          final metadata = _metadataService.getMetadataForImage(imageId);
+          final hasProfile = metadata.characterIds.isNotEmpty;
+          
+          if (_currentProfileFilter == ProfileFilter.withProfile && !hasProfile) return false;
+          if (_currentProfileFilter == ProfileFilter.withoutProfile && hasProfile) return false;
+        }
+
+        // --- 2. Filtro por Búsqueda de Texto ---
+        if (query.isEmpty) return true;
+
+        final cleanName = _getDeobfuscatedName(p.basename(entity.path)).toLowerCase();
         if (cleanName.contains(query)) return true;
 
-        // Buscar por etiquetas
         final imageId = p.relative(entity.path, from: _vaultRootDir.path);
         final metadata = _metadataService.getMetadataForImage(imageId); 
         
         if (metadata.tags.any((tag) => tag.toLowerCase().contains(query))) return true;
         if (metadata.profile.values.any((val) => val.toLowerCase().contains(query))) return true;
 
-        // ---> NUEVO: Buscar por personaje y franquicia asociadas a la imagen
         for (final charId in metadata.characterIds) {
           final character = _metadataService.getCharacterSync(charId);
           if (character != null) {
             if (character.name.toLowerCase().contains(query) ||
                 character.franchise.toLowerCase().contains(query)) {
-              return true; // Encontramos oro
+              return true;
             }
           }
         }
-
         return false;
       }
       return false;
     }).toList();
-    if (_scrollController.hasClients) {
+    
+    // AQUÍ ESTÁ LA MAGIA: Solo salta arriba si resetScroll es true
+    if (resetScroll && _scrollController.hasClients) {
       _scrollController.jumpTo(0.0);
     }
   }
@@ -874,6 +892,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     _doubleTapTimer?.cancel();
     _hideContextMenu();
     _sortOverlay?.remove();
+    _filterOverlay?.remove();
     _scrollController.dispose();
     _notificationTimer?.cancel();
     _searchController.dispose();
@@ -2644,6 +2663,97 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
     Overlay.of(context).insert(_sortOverlay!);
   }
 
+  void _showFilterMenu(BuildContext context) {
+    if (_filterOverlay != null) {
+      _filterOverlay?.remove();
+      _filterOverlay = null;
+      return;
+    }
+
+    final RenderBox? button =
+        _filterButtonKey.currentContext?.findRenderObject() as RenderBox?;
+    if (button == null) return;
+    final position = button.localToGlobal(Offset.zero);
+
+    Widget buildMenuItem(String title, ProfileFilter filter) {
+      final isSelected = _currentProfileFilter == filter;
+      return InkWell(
+        onTap: () {
+          _filterOverlay?.remove();
+          _filterOverlay = null;
+          
+          setState(() {
+            _currentProfileFilter = filter;
+            _applySearchFilter(resetScroll: true); // Aplicamos el filtro visualmente
+          });
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+          child: Row(
+            children: [
+              Icon(isSelected ? Icons.check : null,
+                  size: 18, color: Colors.white),
+              const SizedBox(width: 12),
+              Text(title, style: const TextStyle(color: Colors.white)),
+            ],
+          ),
+        ),
+      );
+    }
+
+    _filterOverlay = OverlayEntry(
+      builder: (context) {
+        return Stack(
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: () {
+                  _filterOverlay?.remove();
+                  _filterOverlay = null;
+                },
+                child: Container(color: Colors.transparent),
+              ),
+            ),
+            Positioned(
+              top: position.dy + button.size.height + 8,
+              right: MediaQuery.of(context).size.width - position.dx - button.size.width,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8.0),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                  child: Material(
+                    elevation: 0,
+                    color: const Color(0xFF252525).withOpacity(0.65),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8.0),
+                      side: const BorderSide(color: Colors.white12, width: 0.5),
+                    ),
+                    child: IntrinsicWidth(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Padding(
+                            padding: EdgeInsets.only(left: 16, top: 12, bottom: 4),
+                            child: Text('FILTRAR POR PERFIL', style: TextStyle(fontSize: 11, color: Colors.white54, fontWeight: FontWeight.bold)),
+                          ),
+                          buildMenuItem('Todos los archivos', ProfileFilter.all),
+                          buildMenuItem('Con perfil asignado', ProfileFilter.withProfile),
+                          buildMenuItem('Sin perfil asignado', ProfileFilter.withoutProfile),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+    Overlay.of(context).insert(_filterOverlay!);
+  }
+
   // --- Build Methods ---
   @override
   Widget build(BuildContext context) {
@@ -2733,6 +2843,33 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                 tooltip: 'Ordenar elementos',
                 onPressed: () => _showSortMenu(context),
               ),
+              if (!_isLoading && _vortexPath != null)
+            IconButton(
+              key: _filterButtonKey,
+              // El icono se ilumina de azul y cambia su forma cuando hay un filtro activo
+              icon: Icon(
+                _currentProfileFilter != ProfileFilter.all 
+                    ? Icons.filter_alt 
+                    : Icons.filter_alt_outlined,
+                color: _currentProfileFilter != ProfileFilter.all 
+                    ? const Color(0xFF0A84FF) 
+                    : Colors.white,
+              ),
+              tooltip: 'Filtrar elementos',
+              onPressed: () => _showFilterMenu(context),
+            ),
+              if (!_isLoading && _vortexPath != null)
+            IconButton(
+              icon: const Icon(Icons.refresh_rounded),
+              tooltip: 'Recargar bóveda',
+              onPressed: () async {
+                // Llama al método existente que escanea y reconstruye la UI
+                await _loadVaultContents(quiet: true);
+                if (mounted) {
+                  showGlassSnackBar(context, 'Bóveda actualizada.', icon: Icons.refresh);
+                }
+              },
+            ),
           IconButton(
   icon: const Icon(Icons.cleaning_services_outlined),
   tooltip: 'Limpiar duplicados',
@@ -3021,7 +3158,7 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
                                 onChanged: (value) {
                                   setState(() {
                                     _searchQuery = value;
-                                    _applySearchFilter();
+                                    _applySearchFilter(resetScroll: true);
                                   });
                                 },
                                 decoration: InputDecoration(
@@ -3142,6 +3279,52 @@ class _VaultExplorerScreenState extends State<VaultExplorerScreen>
         double usableWidth = constraints.maxWidth - 48.0;
         int columns = (usableWidth / (_thumbnailExtent + 8.0)).ceil();
         if (columns < 1) columns = 1;
+
+        // CÁLCULO EXACTO: GridView estira las imágenes levemente para llenar la fila.
+        // Calculamos el tamaño REAL de las imágenes en este preciso momento.
+        final double childWidth = (usableWidth - (8.0 * (columns - 1))) / columns;
+        final double actualItemHeight = childWidth + 8.0; // 8.0 es el mainAxisSpacing
+
+        // --- LÓGICA PROFESIONAL: MANTENER EL CENTRO EXACTO AL REDIMENSIONAR ---
+        // Ahora se activa si cambian las columnas o si las imágenes se estiran/encogen más de 0.1px
+        if (_lastItemHeight != 0.0 && (_lastColumnCount != columns || (_lastItemHeight - actualItemHeight).abs() > 0.1) && _scrollController.hasClients) {
+          final double currentOffset = _scrollController.offset;
+          
+          if (currentOffset > 0) { 
+            // Tenemos en cuenta si la barra de búsqueda bajó la cuadrícula
+            final double topPadding = _isSearchVisible ? 70.0 : 8.0;
+            final double oldViewportHeight = _scrollController.position.viewportDimension;
+            
+            // A. Encontramos el píxel central anterior, restando el padding superior
+            final double oldCenterYRelative = (currentOffset + (oldViewportHeight / 2)) - topPadding;
+            
+            // B. Usamos la altura REAL que tenían las imágenes ANTES de redimensionar
+            final double exactCenterRow = oldCenterYRelative / _lastItemHeight;
+            final double exactCenterIndex = exactCenterRow * _lastColumnCount;
+            
+            // C. Proyectamos ese índice exacto a las NUEVAS columnas
+            final double newExactCenterRow = exactCenterIndex / columns;
+            
+            // D. Usamos la NUEVA altura real para ubicar esa fila
+            final double newCenterYRelative = newExactCenterRow * actualItemHeight;
+            
+            // E. Restauramos el padding superior y restamos la mitad de la nueva pantalla para centrar
+            final double newCenterOffsetAbsolute = newCenterYRelative + topPadding;
+            final double newViewportHeight = constraints.maxHeight;
+            final double newOffset = newCenterOffsetAbsolute - (newViewportHeight / 2);
+
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (_scrollController.hasClients) {
+                _scrollController.jumpTo(
+                  newOffset.clamp(0.0, _scrollController.position.maxScrollExtent)
+                );
+              }
+            });
+          }
+        }
+        _lastColumnCount = columns; 
+        _lastItemHeight = actualItemHeight; // Guardamos la altura real para el próximo cálculo
+        // ---------------------------------------------------------------
 
         return Shortcuts(
           shortcuts: <ShortcutActivator, Intent>{
@@ -5528,7 +5711,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _setAutoHide(int? value) async {
     if (value == null) return;
     setState(() => _autoHideSeconds = value);
-    autoHideNotifier.value = value; // Sincroniza al instante con el AuthWrapper
+    autoHideNotifier.value = value; 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_autoHideTimeoutKey, value);
   }
@@ -5553,8 +5736,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await prefs.setBool(_showNotificationsKey, value);
   }
 
-  Future<void> _setCloseAction(CloseAction? value) async {
-    if (value == null) return;
+  Future<void> _setCloseAction(CloseAction value) async {
     setState(() => _closeAction = value);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_closeActionKey, value.name);
@@ -5568,8 +5750,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       } else {
         await launchAtStartup.disable();
       }
-
-      // Guardamos en prefs solo como respaldo (opcional)
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_startupActionKey, value);
 
@@ -5581,12 +5761,260 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
       }
     } catch (e) {
-      // Si algo falla (ej. permisos), revertimos el switch
       if (mounted) {
         setState(() => _startup = !value);
         showGlassSnackBar(context, 'Error al cambiar el inicio automático: $e', icon: Icons.error_outline, iconColor: Colors.redAccent);
       }
     }
+  }
+
+  Future<void> _exportCharacterTemplate() async {
+    String? outputFile = await FilePicker.platform.saveFile(
+      dialogTitle: 'Guardar plantilla JSON',
+      fileName: 'plantilla_personajes.json',
+      type: FileType.custom,
+      allowedExtensions: ['json'],
+    );
+
+    if (outputFile == null) return;
+
+    final template = [
+      {
+        "name": "Ejemplo Nombre",
+        "franchise": "Ejemplo Franquicia",
+        "gender": "Femenino",
+        "age": "20",
+        "birthday": "15 de Agosto",
+        "custom_fields": {
+          "Color de cabello": "Rosa",
+          "Arma": "Espada mágica",
+          "Ocupación": "Estudiante"
+        }
+      }
+    ];
+
+    try {
+      final file = File(outputFile);
+      await file.writeAsString(const JsonEncoder.withIndent('  ').convert(template));
+      if (mounted) {
+        showGlassSnackBar(context, 'Plantilla exportada correctamente.', icon: Icons.download_done);
+      }
+    } catch (e) {
+      if (mounted) {
+        showGlassSnackBar(context, 'Error al exportar: $e', icon: Icons.error_outline, iconColor: Colors.redAccent);
+      }
+    }
+  }
+
+  Future<void> _importCharactersFromJson() async {
+    if (widget.metadataService == null) return;
+
+    FilePickerResult? result = await FilePicker.platform.pickFiles(
+      dialogTitle: 'Seleccionar JSON de personajes',
+      type: FileType.custom,
+      allowedExtensions: ['json'],
+    );
+
+    if (result == null || result.files.single.path == null) return;
+
+    try {
+      final file = File(result.files.single.path!);
+      final content = await file.readAsString();
+      final List<dynamic> jsonList = jsonDecode(content);
+
+      int importedCount = 0;
+      int updatedCount = 0;
+      int skippedCount = 0;
+
+      for (var item in jsonList) {
+        if (item is Map<String, dynamic>) {
+          final name = item['name']?.toString().trim() ?? '';
+          final franchise = item['franchise']?.toString().trim() ?? '';
+
+          if (name.isEmpty || franchise.isEmpty) {
+            skippedCount++;
+            continue;
+          }
+
+          // Preparar los campos personalizados que vienen del JSON
+          final customFieldsRaw = item['custom_fields'];
+          Map<String, String> jsonCustomFields = {};
+          if (customFieldsRaw is Map) {
+            customFieldsRaw.forEach((k, v) {
+              jsonCustomFields[k.toString()] = v.toString();
+            });
+          }
+
+          // Buscar si el personaje ya existe en la base de datos local
+          final existing = await widget.metadataService!.findExistingCharacter(name, franchise);
+          
+          if (existing != null) {
+            // --- MODO ACTUALIZACIÓN ---
+            // Fusionamos los campos extra: conservamos los que ya tenía y sobrescribimos/agregamos los del JSON
+            Map<String, String> mergedCustomFields = Map.from(existing.customFields);
+            mergedCustomFields.addAll(jsonCustomFields);
+
+            final updatedChar = LocalCharacter(
+              id: existing.id, // IMPORTANTE: Mantener el ID para que no se desvincule de las imágenes
+              name: name, // Usamos el nombre del JSON para respetar mayúsculas/minúsculas
+              franchise: franchise,
+              gender: item['gender']?.toString() ?? existing.gender,
+              age: item['age']?.toString() ?? existing.age,
+              birthday: item['birthday']?.toString() ?? existing.birthday,
+              avatarPath: existing.avatarPath, // Conservamos la foto de perfil que ya tenía
+              customFields: mergedCustomFields,
+            );
+
+            await widget.metadataService!.updateCharacter(updatedChar);
+            updatedCount++;
+          } else {
+            // --- MODO CREACIÓN ---
+            final newChar = LocalCharacter(
+              name: name,
+              franchise: franchise,
+              gender: item['gender']?.toString() ?? 'Desconocido',
+              age: item['age']?.toString() ?? 'Desconocida',
+              birthday: item['birthday']?.toString() ?? 'Desconocido',
+              customFields: jsonCustomFields,
+            );
+
+            await widget.metadataService!.insertCharacter(newChar);
+            importedCount++;
+          }
+        }
+      }
+
+      if (mounted) {
+        showGlassSnackBar(
+          context, 
+          'Resultado: $importedCount nuevos, $updatedCount actualizados, $skippedCount con errores.', 
+          icon: Icons.check_circle_outline
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        showGlassSnackBar(context, 'Error al procesar el archivo JSON.', icon: Icons.error_outline, iconColor: Colors.redAccent);
+      }
+    }
+  }
+
+  Future<void> _exportCharactersToJson() async {
+    if (widget.metadataService == null) return;
+
+    try {
+      // 1. Obtenemos todos los personajes registrados
+      final characters = await widget.metadataService!.getAllCharacters();
+      if (characters.isEmpty) {
+        if (mounted) {
+          showGlassSnackBar(context, 'No hay perfiles para exportar.', icon: Icons.info_outline, iconColor: Colors.amber);
+        }
+        return;
+      }
+
+      // 2. Pedimos al usuario dónde guardar el archivo
+      String? outputFile = await FilePicker.platform.saveFile(
+        dialogTitle: 'Exportar perfiles a JSON',
+        fileName: 'respaldo_personajes.json',
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (outputFile == null) return;
+
+      // 3. Formateamos la lista con la misma estructura requerida para importaciones
+      final List<Map<String, dynamic>> exportData = characters.map((char) {
+        return {
+          "name": char.name,
+          "franchise": char.franchise,
+          "gender": char.gender,
+          "age": char.age,
+          "birthday": char.birthday,
+          "custom_fields": char.customFields,
+          // Nota: Omitimos "avatarPath" ya que las rutas absolutas de tu disco duro 
+          // no funcionarían si pasas este JSON a otra computadora.
+        };
+      }).toList();
+
+      // 4. Guardamos el archivo
+      final file = File(outputFile);
+      await file.writeAsString(const JsonEncoder.withIndent('  ').convert(exportData));
+      
+      if (mounted) {
+        showGlassSnackBar(context, 'Copia de seguridad guardada: ${characters.length} perfiles.', icon: Icons.download_done);
+      }
+    } catch (e) {
+      if (mounted) {
+        showGlassSnackBar(context, 'Error al exportar: $e', icon: Icons.error_outline, iconColor: Colors.redAccent);
+      }
+    }
+  }
+
+  // --- COMPONENTES AUXILIARES REDISEÑADOS ---
+
+  Widget _buildSwitchRow({
+    required String title,
+    required String subtitle,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 10.0),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.white)),
+                if (subtitle.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(subtitle, style: const TextStyle(fontSize: 11, color: Colors.white54)),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(width: 16),
+          // Transform.scale reduce el tamaño general del switch para un aspecto más minimalista
+          Transform.scale(
+            scale: 0.8, 
+            child: Switch.adaptive(
+              value: value,
+              onChanged: onChanged,
+              activeColor: Colors.white, // Color del círculo cuando está encendido
+              activeTrackColor: const Color(0xFF0A84FF), // Tu azul de acento principal
+              inactiveThumbColor: Colors.white, // Círculo blanco cuando está apagado (más elegante)
+              inactiveTrackColor: Colors.white10, // Fondo sutil cuando está apagado
+              // Elimina el borde por defecto de Material 3 para un look más plano y estilo Mac
+              trackOutlineColor: MaterialStateProperty.resolveWith<Color?>(
+                (Set<MaterialState> states) => Colors.transparent,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionButton({
+    required String label,
+    required VoidCallback onPressed,
+    bool isDestructive = false,
+  }) {
+    return OutlinedButton(
+      onPressed: onPressed,
+      style: OutlinedButton.styleFrom(
+        foregroundColor: isDestructive ? Colors.redAccent : const Color(0xFF0A84FF),
+        side: BorderSide(
+          color: isDestructive ? Colors.redAccent.withOpacity(0.4) : const Color(0xFF0A84FF).withOpacity(0.4),
+          width: 1,
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        minimumSize: const Size(90, 32),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+      ),
+      child: Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+    );
   }
 
   @override
@@ -5600,46 +6028,77 @@ class _SettingsScreenState extends State<SettingsScreen> {
           : ListView(
               padding: const EdgeInsets.all(16.0),
               children: [
-                // TÍTULO DE SECCIÓN
+                // --- SECCIÓN 1: COMPORTAMIENTO ---
                 const Padding(
                   padding: EdgeInsets.only(left: 16, bottom: 8),
-                  child: Text('COMPORTAMIENTO',
-                      style: TextStyle(color: Colors.white54, fontSize: 11)),
+                  child: Text('COMPORTAMIENTO', style: TextStyle(color: Colors.white54, fontSize: 11)),
                 ),
-                // CAJA AGRUPADORA 1
                 Container(
                   decoration: BoxDecoration(
                     color: const Color(0xFF1C1C1E),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: Column(
-                    children: [
-                      RadioListTile<CloseAction>(
-                        title: const Text('Minimizar a la bandeja',
-                            style: TextStyle(fontSize: 13)),
-                        value: CloseAction.minimize,
-                        groupValue: _closeAction,
-                        onChanged: _setCloseAction,
-                        activeColor: const Color(0xFF0A84FF), // Azul Mac
-                      ),
-                      const Divider(
-                          height: 1, indent: 16, color: Colors.white12),
-                      RadioListTile<CloseAction>(
-                        title: const Text('Cerrar la aplicación',
-                            style: TextStyle(fontSize: 13)),
-                        value: CloseAction.exit,
-                        groupValue: _closeAction,
-                        onChanged: _setCloseAction,
-                        activeColor: const Color(0xFF0A84FF),
-                      ),
-                    ],
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                    child: Row(
+                      children: [
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text('Al cerrar la aplicación', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.white)),
+                              SizedBox(height: 2),
+                              Text('Elige la acción por defecto al presionar el botón de cierre', style: TextStyle(fontSize: 11, color: Colors.white54)),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        SegmentedButton<CloseAction>(
+                          segments: const <ButtonSegment<CloseAction>>[
+                            ButtonSegment<CloseAction>(
+                              value: CloseAction.minimize,
+                              label: Text('Minimizar', style: TextStyle(fontSize: 12)),
+                            ),
+                            ButtonSegment<CloseAction>(
+                              value: CloseAction.exit,
+                              label: Text('Cerrar', style: TextStyle(fontSize: 12)),
+                            ),
+                          ],
+                          selected: <CloseAction>{_closeAction},
+                          onSelectionChanged: (Set<CloseAction> newSelection) {
+                            _setCloseAction(newSelection.first);
+                          },
+                          showSelectedIcon: false,
+                          style: ButtonStyle(
+                            visualDensity: VisualDensity.compact,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            backgroundColor: MaterialStateProperty.resolveWith<Color?>((states) {
+                              if (states.contains(MaterialState.selected)) {
+                                return const Color(0xFF0A84FF).withOpacity(0.15);
+                              }
+                              return Colors.transparent;
+                            }),
+                            foregroundColor: MaterialStateProperty.resolveWith<Color?>((states) {
+                              if (states.contains(MaterialState.selected)) {
+                                return const Color(0xFF0A84FF);
+                              }
+                              return Colors.white54;
+                            }),
+                            side: MaterialStateProperty.all(const BorderSide(color: Colors.white12, width: 0.5)),
+                            shape: MaterialStateProperty.all(RoundedRectangleBorder(borderRadius: BorderRadius.circular(6))),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
 
                 const SizedBox(height: 24),
-                // TÍTULO DE SECCIÓN 2
+
+                // --- SECCIÓN 2: SEGURIDAD ---
                 const Padding(
-                  padding: EdgeInsets.only(left: 16, bottom: 8, top: 8),
+                  padding: EdgeInsets.only(left: 16, bottom: 8),
                   child: Text('SEGURIDAD', style: TextStyle(color: Colors.white54, fontSize: 11)),
                 ),
                 Container(
@@ -5647,40 +6106,106 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     color: const Color(0xFF1C1C1E),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: ListTile(
-                    leading: const Icon(Icons.lock_clock, color: Color(0xFF0A84FF)),
-                    title: const Text('Bloqueo por inactividad', style: TextStyle(fontSize: 13)),
-                    subtitle: const Text('Ocultar en la bandeja si no hay interacción', style: TextStyle(fontSize: 11, color: Colors.white54)),
-                    trailing: DropdownButton<int>(
-                      value: _autoHideSeconds, // <-- NUEVA VARIABLE
-                      dropdownColor: const Color(0xFF2C2C2E),
-                      underline: const SizedBox(),
-                      style: const TextStyle(color: Color(0xFF0A84FF), fontSize: 13, fontWeight: FontWeight.w500),
-                      icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF0A84FF)),
-                      items: const [
-                        DropdownMenuItem(value: 0, child: Text('Desactivado')),
-                        DropdownMenuItem(value: 30, child: Text('30 segundos')),
-                        DropdownMenuItem(value: 60, child: Text('1 minuto')),
-                        DropdownMenuItem(value: 120, child: Text('2 minutos')),
-                        DropdownMenuItem(value: 180, child: Text('3 minutos')),
-                        DropdownMenuItem(value: 300, child: Text('5 minutos')),
-                        DropdownMenuItem(value: 600, child: Text('10 minutos')),
-                        DropdownMenuItem(value: 1800, child: Text('30 minutos')),
-                        DropdownMenuItem(value: 3600, child: Text('1 hora')),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.lock_clock, color: Color(0xFF0A84FF), size: 20),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text('Bloqueo por inactividad', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.white)),
+                              SizedBox(height: 2),
+                              Text('Ocultar automáticamente la app tras un periodo sin interacción', style: TextStyle(fontSize: 11, color: Colors.white54)),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.black26,
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: Colors.white12, width: 0.5),
+                          ),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<int>(
+                              value: _autoHideSeconds,
+                              dropdownColor: const Color(0xFF2C2C2E),
+                              style: const TextStyle(color: Color(0xFF0A84FF), fontSize: 13, fontWeight: FontWeight.w500),
+                              icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF0A84FF), size: 18),
+                              isDense: true,
+                              items: const [
+                                DropdownMenuItem(value: 0, child: Text('Desactivado')),
+                                DropdownMenuItem(value: 30, child: Text('30 segundos')),
+                                DropdownMenuItem(value: 60, child: Text('1 minuto')),
+                                DropdownMenuItem(value: 120, child: Text('2 minutos')),
+                                DropdownMenuItem(value: 180, child: Text('3 minutos')),
+                                DropdownMenuItem(value: 300, child: Text('5 minutos')),
+                                DropdownMenuItem(value: 600, child: Text('10 minutos')),
+                                DropdownMenuItem(value: 1800, child: Text('30 minutos')),
+                                DropdownMenuItem(value: 3600, child: Text('1 hora')),
+                              ],
+                              onChanged: _setAutoHide,
+                            ),
+                          ),
+                        ),
                       ],
-                      onChanged: _setAutoHide,
                     ),
                   ),
                 ),
+
+                const Padding(
+                  padding: EdgeInsets.only(left: 16, bottom: 8, top: 24),
+                  child: Text('INTELIGENCIA ARTIFICIAL', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                ),
+                Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1C1C1E),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.vpn_key_outlined, color: Color(0xFF0A84FF), size: 20),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text('Clave API de Gemini', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.white)),
+                              SizedBox(height: 2),
+                              Text('Requerida para la función de autocompletado de biografías', style: TextStyle(fontSize: 11, color: Colors.white54)),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        _buildActionButton(
+                          label: 'Borrar Clave',
+                          isDestructive: true,
+                          onPressed: () async {
+                            final prefs = await SharedPreferences.getInstance();
+                            await prefs.remove('gemini_api_key');
+                            if (mounted) showGlassSnackBar(context, 'Clave eliminada del sistema.', icon: Icons.delete_outline);
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
                 const SizedBox(height: 24),
 
-                // TÍTULO DE SECCIÓN 3
+                // --- SECCIÓN 3: SISTEMA Y NOTIFICACIONES ---
                 const Padding(
                   padding: EdgeInsets.only(left: 16, bottom: 8),
-                  child: Text('SISTEMA Y NOTIFICACIONES',
-                      style: TextStyle(color: Colors.white54, fontSize: 11)),
+                  child: Text('SISTEMA Y NOTIFICACIONES', style: TextStyle(color: Colors.white54, fontSize: 11)),
                 ),
-                // CAJA AGRUPADORA 2
                 Container(
                   decoration: BoxDecoration(
                     color: const Color(0xFF1C1C1E),
@@ -5688,48 +6213,69 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   child: Column(
                     children: [
-                      SwitchListTile.adaptive(
-                        // Adaptive da el estilo redondeado nativo
-                        title: const Text('Iniciar con el sistema',
-                            style: TextStyle(fontSize: 13)),
+                      _buildSwitchRow(
+                        title: 'Iniciar con el sistema',
+                        subtitle: 'Arrancar la aplicación automáticamente al encender el equipo',
                         value: _startup,
                         onChanged: _setStartup,
-                        activeColor:
-                            const Color(0xFF32D74B), // Verde vibrante de Apple
                       ),
-                      const Divider(
-                          height: 1, indent: 16, color: Colors.white12),
-                      SwitchListTile.adaptive(
-                        title: const Text('Avisos en segundo plano',
-                            style: TextStyle(fontSize: 13)),
+                      const Divider(height: 1, indent: 16, endIndent: 16, color: Colors.white10),
+                      _buildSwitchRow(
+                        title: 'Avisos en segundo plano',
+                        subtitle: 'Recibir notificaciones nativas sobre archivos absorbidos',
                         value: _showNotifications,
                         onChanged: _setShowNotifications,
-                        activeColor: const Color(0xFF32D74B),
                       ),
                       if (_showNotifications) ...[
-                        const Divider(height: 1, indent: 16, color: Colors.white12),
+                        const Divider(height: 1, indent: 16, endIndent: 16, color: Colors.white10),
                         Padding(
-                          padding: const EdgeInsets.only(left: 16.0, right: 16.0, top: 4.0, bottom: 12.0),
+                          padding: const EdgeInsets.only(left: 16.0, right: 16.0, top: 10.0, bottom: 14.0),
                           child: Row(
                             children: [
-                              const Text('Agrupar notificaciones:', style: TextStyle(fontSize: 13)),
                               Expanded(
-                                child: Slider(
-                                  value: _notificationDelay.toDouble(),
-                                  min: 1,
-                                  max: 30, // Máximo 30 segundos
-                                  divisions: 29,
-                                  label: '$_notificationDelay seg',
-                                  activeColor: const Color(0xFF0A84FF), // Azul estilo Mac
-                                  inactiveColor: Colors.white24,
-                                  onChanged: _setNotificationDelay,
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Text('Agrupar notificaciones', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.white)),
+                                    const SizedBox(height: 2),
+                                    Text('Espera $_notificationDelay segundos antes de lanzar una alerta conjunta', style: const TextStyle(fontSize: 11, color: Colors.white54)),
+                                  ],
                                 ),
                               ),
+                              const SizedBox(width: 16),
                               SizedBox(
-                                width: 35,
+                                width: 150,
+                                child: SliderTheme(
+                                  data: SliderTheme.of(context).copyWith(
+                                    trackHeight: 2.0,
+                                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6.0),
+                                    overlayShape: const RoundSliderOverlayShape(overlayRadius: 14.0),
+                                    activeTrackColor: const Color(0xFF0A84FF),
+                                    inactiveTrackColor: Colors.white10,
+                                    thumbColor: Colors.white,
+                                  ),
+                                  child: Slider(
+                                    value: _notificationDelay.toDouble(),
+                                    min: 1,
+                                    max: 30,
+                                    divisions: 29,
+                                    onChanged: _setNotificationDelay,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Container(
+                                width: 40,
+                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.black26,
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(color: Colors.white12, width: 0.5),
+                                ),
                                 child: Text('$_notificationDelay s', 
-                                  style: const TextStyle(fontSize: 13, color: Colors.white70),
-                                  textAlign: TextAlign.right,
+                                  style: const TextStyle(fontSize: 12, color: Color(0xFF0A84FF), fontWeight: FontWeight.w600),
+                                  textAlign: TextAlign.center,
                                 ),
                               ),
                             ],
@@ -5742,10 +6288,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                 const SizedBox(height: 24),
 
+                // --- SECCIÓN 4: VISTA DE MINIATURAS ---
                 const Padding(
                   padding: EdgeInsets.only(left: 16, bottom: 8),
-                  child: Text('VISTA DE MINIATURAS',
-                      style: TextStyle(color: Colors.white54, fontSize: 11)),
+                  child: Text('VISTA DE MINIATURAS', style: TextStyle(color: Colors.white54, fontSize: 11)),
                 ),
                 Container(
                   decoration: BoxDecoration(
@@ -5754,90 +6300,176 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   child: Column(
                     children: [
-                      SwitchListTile.adaptive(
-                        title: const Text('Mostrar calificación (estrellas)',
-                            style: TextStyle(fontSize: 13)),
+                      _buildSwitchRow(
+                        title: 'Mostrar calificación (estrellas)',
+                        subtitle: 'Visualizar la puntuación en la esquina inferior de la miniatura',
                         value: _showRatings,
                         onChanged: _setShowRatings,
-                        activeColor: const Color(0xFF32D74B),
                       ),
-                      const Divider(
-                          height: 1, indent: 16, color: Colors.white12),
-                      SwitchListTile.adaptive(
-                        title: const Text('Mostrar contador de etiquetas',
-                            style: TextStyle(fontSize: 13)),
+                      const Divider(height: 1, indent: 16, endIndent: 16, color: Colors.white10),
+                      _buildSwitchRow(
+                        title: 'Mostrar contador de etiquetas',
+                        subtitle: 'Indicar el número de etiquetas activas sobre el archivo',
                         value: _showTags,
                         onChanged: _setShowTags,
-                        activeColor: const Color(0xFF32D74B),
                       ),
                     ],
                   ),
                 ),
+
                 const SizedBox(height: 24),
 
+                // --- SECCIÓN 5: CONTENIDO ---
                 const Padding(
                   padding: EdgeInsets.only(left: 16, bottom: 8),
-                  child: Text('CONTENIDO',
-                      style: TextStyle(color: Colors.white54, fontSize: 11)),
+                  child: Text('CONTENIDO', style: TextStyle(color: Colors.white54, fontSize: 11)),
                 ),
                 Container(
                   decoration: BoxDecoration(
                     color: const Color(0xFF1C1C1E),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: ListTile(
-                    leading: const Icon(Icons.label_outline,
-                        color: Color(0xFF0A84FF)),
-                    title: const Text('Gestionar Etiquetas',
-                        style: TextStyle(fontSize: 13)),
-                    trailing: const Icon(Icons.chevron_right,
-                        size: 20, color: Colors.white24),
-                    onTap: () {
-                      if (widget.metadataService != null) {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => TagManagementScreen(
-                                metadataService: widget.metadataService!),
-                          ),
-                        );
-                      }
-                    },
+                  child: Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.label_outline, color: Color(0xFF0A84FF), size: 20),
+                            const SizedBox(width: 12),
+                            const Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text('Gestionar Etiquetas', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.white)),
+                                  const SizedBox(height: 2),
+                                  Text('Editar nombres o eliminar etiquetas globales del sistema', style: TextStyle(fontSize: 11, color: Colors.white54)),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            _buildActionButton(
+                              label: 'Administrar',
+                              onPressed: () {
+                                if (widget.metadataService != null) {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => TagManagementScreen(
+                                          metadataService: widget.metadataService!),
+                                    ),
+                                  );
+                                }
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Divider(height: 1, indent: 16, endIndent: 16, color: Colors.white10),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.data_object, color: Color(0xFF0A84FF), size: 20),
+                            const SizedBox(width: 12),
+                            const Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text('Importar Personajes (JSON)', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.white)),
+                                  const SizedBox(height: 2),
+                                  Text('Cargar perfiles masivos desde un archivo externo', style: TextStyle(fontSize: 11, color: Colors.white54)),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            IconButton(
+                              icon: const Icon(Icons.download_outlined, color: Colors.white54, size: 20),
+                              tooltip: 'Descargar Plantilla JSON',
+                              onPressed: _exportCharacterTemplate,
+                            ),
+                            const SizedBox(width: 8),
+                            _buildActionButton(
+                              label: 'Importar...',
+                              onPressed: _importCharactersFromJson,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Divider(height: 1, indent: 16, endIndent: 16, color: Colors.white10),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.backup_table_outlined, color: Color(0xFF0A84FF), size: 20),
+                            const SizedBox(width: 12),
+                            const Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text('Exportar Personajes (JSON)', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.white)),
+                                  const SizedBox(height: 2),
+                                  Text('Guardar una copia de seguridad de todos tus perfiles', style: TextStyle(fontSize: 11, color: Colors.white54)),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            _buildActionButton(
+                              label: 'Exportar...',
+                              onPressed: _exportCharactersToJson,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
+                  
                 ),
+
+            
 
                 const SizedBox(height: 24),
 
-                // NUEVA SECCIÓN: ACCIONES DE BÓVEDA
+                // --- SECCIÓN 6: ACCIONES CRÍTICAS ---
                 if (widget.onRestoreAll != null) ...[
                   const Padding(
                     padding: EdgeInsets.only(left: 16, bottom: 8),
-                    child: Text('RESTAURAR BÓVEDA',
-                        style: TextStyle(
-                            color: Colors.redAccent,
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold)),
+                    child: Text('RESTAURAR BÓVEDA', style: TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold)),
                   ),
                   Container(
                     decoration: BoxDecoration(
                       color: const Color(0xFF1C1C1E),
                       borderRadius: BorderRadius.circular(10),
-                      border:
-                          Border.all(color: Colors.redAccent.withOpacity(0.2)),
+                      border: Border.all(color: Colors.redAccent.withOpacity(0.15)),
                     ),
-                    child: ListTile(
-                      leading: const Icon(Icons.settings_backup_restore,
-                          color: Colors.redAccent),
-                      title: const Text('Restaurar toda la bóveda',
-                          style:
-                              TextStyle(fontSize: 13, color: Colors.redAccent)),
-                      subtitle: const Text(
-                          'Mueve todos los archivos fuera y olvida la carpeta actual.',
-                          style:
-                              TextStyle(fontSize: 11, color: Colors.white54)),
-                      onTap: () {
-                        widget.onRestoreAll!();
-                      },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.settings_backup_restore, color: Colors.redAccent, size: 20),
+                          const SizedBox(width: 12),
+                          const Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text('Restaurar toda la bóveda', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.redAccent)),
+                                const SizedBox(height: 2),
+                                Text('Extraer todos los archivos encriptados y olvidar el Vórtice actual', style: TextStyle(fontSize: 11, color: Colors.white54)),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          _buildActionButton(
+                            label: 'Restaurar todo',
+                            onPressed: widget.onRestoreAll!,
+                            isDestructive: true,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ],

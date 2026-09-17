@@ -8,11 +8,12 @@ import 'package:path/path.dart' as p;
 
 import 'metadata_service.dart';
 import 'thumbnail_service.dart';
-import 'main.dart'; 
+import 'main.dart';
 import 'ui_utils.dart';
 import 'tag_editor_dialog.dart';
 import 'rating_stars_display.dart';
 import 'profile_editor_dialog.dart';
+import 'dart:typed_data';
 
 class ProfileManagementScreen extends StatefulWidget {
   final MetadataService metadataService;
@@ -27,7 +28,8 @@ class ProfileManagementScreen extends StatefulWidget {
   });
 
   @override
-  State<ProfileManagementScreen> createState() => _ProfileManagementScreenState();
+  State<ProfileManagementScreen> createState() =>
+      _ProfileManagementScreenState();
 }
 
 class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
@@ -36,7 +38,7 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
   LocalCharacter? _selectedCharacter;
   List<String> _associatedImages = [];
   bool _showExtraFields = false;
-  
+
   // --- NUEVO: ESTADO DE VISTA (PLANOS VS GRUPOS) ---
   bool _groupByFranchise = false;
 
@@ -81,14 +83,16 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
       } else {
         _filteredCharacters = _allCharacters.where((c) {
           return c.name.toLowerCase().contains(query) ||
-                 c.franchise.toLowerCase().contains(query);
+              c.franchise.toLowerCase().contains(query);
         }).toList();
       }
-      
-      if (_selectedCharacter != null && !_filteredCharacters.any((c) => c.id == _selectedCharacter!.id)) {
+
+      if (_selectedCharacter != null &&
+          !_filteredCharacters.any((c) => c.id == _selectedCharacter!.id)) {
         _selectCharacter(null);
       } else if (_selectedCharacter != null) {
-        _selectedCharacter = _filteredCharacters.firstWhere((c) => c.id == _selectedCharacter!.id);
+        _selectedCharacter = _filteredCharacters
+            .firstWhere((c) => c.id == _selectedCharacter!.id);
       }
     });
   }
@@ -97,12 +101,14 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
   Map<String, List<LocalCharacter>> get _groupedCharacters {
     final map = <String, List<LocalCharacter>>{};
     for (var c in _filteredCharacters) {
-      final f = c.franchise.trim().isEmpty ? 'Sin Franquicia' : c.franchise.trim();
+      final f =
+          c.franchise.trim().isEmpty ? 'Sin Franquicia' : c.franchise.trim();
       map.putIfAbsent(f, () => []).add(c);
     }
     // Ordenar alfabéticamente las franquicias
-    var sortedKeys = map.keys.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-    return { for (var k in sortedKeys) k : map[k]! };
+    var sortedKeys = map.keys.toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return {for (var k in sortedKeys) k: map[k]!};
   }
 
   void _selectCharacter(LocalCharacter? char) {
@@ -115,7 +121,8 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
       _focusedIndex = -1;
 
       if (char != null) {
-        _associatedImages = widget.metadataService.getImagesForCharacter(char.id!);
+        _associatedImages =
+            widget.metadataService.getImagesForCharacter(char.id!);
       } else {
         _associatedImages = [];
       }
@@ -126,13 +133,20 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
   void _handleItemTap(String imageId, int index) {
     _hideContextMenu();
 
-    final isShiftPressed = RawKeyboard.instance.keysPressed.contains(LogicalKeyboardKey.shiftLeft) ||
-                           RawKeyboard.instance.keysPressed.contains(LogicalKeyboardKey.shiftRight);
+    final isShiftPressed = RawKeyboard.instance.keysPressed
+            .contains(LogicalKeyboardKey.shiftLeft) ||
+        RawKeyboard.instance.keysPressed
+            .contains(LogicalKeyboardKey.shiftRight);
 
-    final isCtrlPressed = RawKeyboard.instance.keysPressed.contains(LogicalKeyboardKey.controlLeft) ||
-                          RawKeyboard.instance.keysPressed.contains(LogicalKeyboardKey.controlRight) ||
-                          (Platform.isMacOS && (RawKeyboard.instance.keysPressed.contains(LogicalKeyboardKey.metaLeft) ||
-                                                RawKeyboard.instance.keysPressed.contains(LogicalKeyboardKey.metaRight)));
+    final isCtrlPressed = RawKeyboard.instance.keysPressed
+            .contains(LogicalKeyboardKey.controlLeft) ||
+        RawKeyboard.instance.keysPressed
+            .contains(LogicalKeyboardKey.controlRight) ||
+        (Platform.isMacOS &&
+            (RawKeyboard.instance.keysPressed
+                    .contains(LogicalKeyboardKey.metaLeft) ||
+                RawKeyboard.instance.keysPressed
+                    .contains(LogicalKeyboardKey.metaRight)));
 
     setState(() {
       _focusedIndex = index;
@@ -141,8 +155,12 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
           _shiftSelectionAnchorIndex = index;
           _selectedImages = {imageId};
         } else {
-          final start = index < _shiftSelectionAnchorIndex! ? index : _shiftSelectionAnchorIndex!;
-          final end = index > _shiftSelectionAnchorIndex! ? index : _shiftSelectionAnchorIndex!;
+          final start = index < _shiftSelectionAnchorIndex!
+              ? index
+              : _shiftSelectionAnchorIndex!;
+          final end = index > _shiftSelectionAnchorIndex!
+              ? index
+              : _shiftSelectionAnchorIndex!;
           _selectedImages = _associatedImages.sublist(start, end + 1).toSet();
         }
       } else if (isCtrlPressed) {
@@ -154,7 +172,9 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
         _shiftSelectionAnchorIndex = index;
       } else {
         // Doble clic
-        if (_doubleTapTimer != null && _doubleTapTimer!.isActive && _lastTappedImage == imageId) {
+        if (_doubleTapTimer != null &&
+            _doubleTapTimer!.isActive &&
+            _lastTappedImage == imageId) {
           _doubleTapTimer!.cancel();
           _lastTappedImage = null;
           _openImage(imageId);
@@ -177,33 +197,37 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
 
     final imageFiles = _associatedImages
         .map((id) => File(p.join(widget.vaultRootPath, id)))
-        .where((file) => file.existsSync()) 
+        .where((file) => file.existsSync())
         .toList();
 
     if (imageFiles.isEmpty) return;
 
-    int initialIndex = imageFiles.indexWhere((f) => p.basename(f.path) == p.basename(targetImageId));
+    int initialIndex = imageFiles
+        .indexWhere((f) => p.basename(f.path) == p.basename(targetImageId));
     if (initialIndex == -1) initialIndex = 0;
 
     Navigator.push(
       context,
       PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 300),
-        opaque: false,
-        pageBuilder: (context, _, __) => FullScreenImageViewer(
-          imageFiles: imageFiles,
-          initialIndex: initialIndex,
-          exportCallback: (file) async => await _handleSingleExport(file),
-          onClose: () => Navigator.pop(context),
-          metadataService: widget.metadataService,
-          vaultRootPath: widget.vaultRootPath,
-        ),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) {
-          final fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: animation, curve: Curves.easeOutCubic));
-          final scaleAnimation = Tween<double>(begin: 0.8, end: 1.0).animate(CurvedAnimation(parent: animation, curve: Curves.easeOutCubic));
-          return FadeTransition(opacity: fadeAnimation, child: ScaleTransition(scale: scaleAnimation, child: child));
-        }
-      ),
+          transitionDuration: const Duration(milliseconds: 300),
+          opaque: false,
+          pageBuilder: (context, _, __) => FullScreenImageViewer(
+                imageFiles: imageFiles,
+                initialIndex: initialIndex,
+                exportCallback: (file) async => await _handleSingleExport(file),
+                onClose: () => Navigator.pop(context),
+                metadataService: widget.metadataService,
+                vaultRootPath: widget.vaultRootPath,
+              ),
+          transitionsBuilder: (context, animation, secondaryAnimation, child) {
+            final fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+                CurvedAnimation(parent: animation, curve: Curves.easeOutCubic));
+            final scaleAnimation = Tween<double>(begin: 0.8, end: 1.0).animate(
+                CurvedAnimation(parent: animation, curve: Curves.easeOutCubic));
+            return FadeTransition(
+                opacity: fadeAnimation,
+                child: ScaleTransition(scale: scaleAnimation, child: child));
+          }),
     );
   }
 
@@ -267,12 +291,14 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
               vaultRootPath: widget.vaultRootPath,
             ),
           ).then((_) => setState(() {
-             // Refrescamos por si el usuario desvincula la imagen desde el editor
-             if (_selectedCharacter != null) {
-               _associatedImages = widget.metadataService.getImagesForCharacter(_selectedCharacter!.id!);
-               _selectedImages.removeWhere((id) => !_associatedImages.contains(id));
-             }
-          }));
+                // Refrescamos por si el usuario desvincula la imagen desde el editor
+                if (_selectedCharacter != null) {
+                  _associatedImages = widget.metadataService
+                      .getImagesForCharacter(_selectedCharacter!.id!);
+                  _selectedImages
+                      .removeWhere((id) => !_associatedImages.contains(id));
+                }
+              }));
         },
         icon: Icons.person_outline,
       ),
@@ -344,7 +370,8 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
                       color: const Color(0xFF252525).withOpacity(0.65),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(8.0),
-                        side: const BorderSide(color: Colors.white12, width: 0.5),
+                        side:
+                            const BorderSide(color: Colors.white12, width: 0.5),
                       ),
                       child: IntrinsicWidth(
                         child: SingleChildScrollView(
@@ -374,13 +401,18 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
     final bottom = isBottomHalf ? screenSize.height - position.dy : null;
     final left = isRightHalf ? null : position.dx;
     final right = isRightHalf ? screenSize.width - position.dx : null;
-    final maxAvailableHeight = isBottomHalf ? position.dy - 16.0 : screenSize.height - position.dy - 16.0;
+    final maxAvailableHeight = isBottomHalf
+        ? position.dy - 16.0
+        : screenSize.height - position.dy - 16.0;
 
     int? currentRating;
     if (_selectedImages.isNotEmpty) {
-      currentRating = widget.metadataService.getMetadataForImage(_selectedImages.first).rating;
+      currentRating = widget.metadataService
+          .getMetadataForImage(_selectedImages.first)
+          .rating;
       for (var id in _selectedImages.skip(1)) {
-        if (widget.metadataService.getMetadataForImage(id).rating != currentRating) {
+        if (widget.metadataService.getMetadataForImage(id).rating !=
+            currentRating) {
           currentRating = null;
           break;
         }
@@ -401,10 +433,12 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
           child: Row(
             children: [
-              Icon(isSelected ? Icons.check : null, size: 18, color: Colors.white),
+              Icon(isSelected ? Icons.check : null,
+                  size: 18, color: Colors.white),
               const SizedBox(width: 12),
               if (index == 0)
-                const Text("Sin calificar", style: TextStyle(color: Colors.white))
+                const Text("Sin calificar",
+                    style: TextStyle(color: Colors.white))
               else
                 RatingStarsDisplay(rating: index, iconSize: 20),
             ],
@@ -425,7 +459,10 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
               ),
             ),
             Positioned(
-              top: top, bottom: bottom, left: left, right: right,
+              top: top,
+              bottom: bottom,
+              left: left,
+              right: right,
               child: ConstrainedBox(
                 constraints: BoxConstraints(maxHeight: maxAvailableHeight),
                 child: ClipRRect(
@@ -437,11 +474,13 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
                       color: const Color(0xFF252525).withOpacity(0.65),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(8.0),
-                        side: const BorderSide(color: Colors.white12, width: 0.5),
+                        side:
+                            const BorderSide(color: Colors.white12, width: 0.5),
                       ),
                       child: IntrinsicWidth(
                         child: SingleChildScrollView(
-                          child: Column(mainAxisSize: MainAxisSize.min, children: items),
+                          child: Column(
+                              mainAxisSize: MainAxisSize.min, children: items),
                         ),
                       ),
                     ),
@@ -461,13 +500,17 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
     _hideContextMenu();
     if (_selectedImages.isEmpty) return;
     final count = _selectedImages.length;
-    final itemText = count == 1 ? 'el elemento seleccionado' : 'los $count elementos seleccionados';
-    
+    final itemText = count == 1
+        ? 'el elemento seleccionado'
+        : 'los $count elementos seleccionados';
+
     bool confirm = await _showConfirmationDialog(
           title: 'Confirmar Eliminación',
-          content: '¿Estás seguro de que quieres eliminar $itemText permanentemente? Esta acción no se puede deshacer.',
-        ) ?? false;
-        
+          content:
+              '¿Estás seguro de que quieres eliminar $itemText permanentemente? Esta acción no se puede deshacer.',
+        ) ??
+        false;
+
     if (!confirm) {
       setState(() => _selectedImages.clear());
       return;
@@ -485,19 +528,23 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
     setState(() {
       _selectedImages.clear();
       if (_selectedCharacter != null) {
-        _associatedImages = widget.metadataService.getImagesForCharacter(_selectedCharacter!.id!);
+        _associatedImages = widget.metadataService
+            .getImagesForCharacter(_selectedCharacter!.id!);
       }
     });
-    if (mounted) showGlassSnackBar(context, '$count elemento(s) eliminado(s).', icon: Icons.delete_outline);
+    if (mounted)
+      showGlassSnackBar(context, '$count elemento(s) eliminado(s).',
+          icon: Icons.delete_outline);
   }
 
   Future<void> _handleExport() async {
     _hideContextMenu();
     if (_selectedImages.isEmpty) return;
 
-    String? selectedDirectory = await FilePicker.platform.getDirectoryPath(dialogTitle: 'Seleccionar carpeta de exportación');
+    String? selectedDirectory = await FilePicker.platform
+        .getDirectoryPath(dialogTitle: 'Seleccionar carpeta de exportación');
     if (selectedDirectory == null) return;
-    
+
     final exportRootDir = Directory(selectedDirectory);
 
     for (final imageId in _selectedImages) {
@@ -510,24 +557,32 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
     }
 
     if (mounted) {
-      showGlassSnackBar(context, '${_selectedImages.length} elemento(s) exportado(s) con éxito a ${exportRootDir.path}.', icon: Icons.download_done);
+      showGlassSnackBar(context,
+          '${_selectedImages.length} elemento(s) exportado(s) con éxito a ${exportRootDir.path}.',
+          icon: Icons.download_done);
     }
     setState(() => _selectedImages.clear());
   }
 
   Future<void> _handleSingleExport(File file) async {
-    String? selectedDirectory = await FilePicker.platform.getDirectoryPath(dialogTitle: 'Seleccionar carpeta de exportación');
+    String? selectedDirectory = await FilePicker.platform
+        .getDirectoryPath(dialogTitle: 'Seleccionar carpeta de exportación');
     if (selectedDirectory == null) return;
-    
+
     final exportRootDir = Directory(selectedDirectory);
     final cleanName = _getDeobfuscatedName(p.basename(file.path));
     final newPath = await _getUniquePath(exportRootDir, cleanName);
 
     try {
       await file.copy(newPath);
-      if (mounted) showGlassSnackBar(context, 'Archivo exportado con éxito a ${exportRootDir.path}.', icon: Icons.download_done);
+      if (mounted)
+        showGlassSnackBar(
+            context, 'Archivo exportado con éxito a ${exportRootDir.path}.',
+            icon: Icons.download_done);
     } catch (e) {
-      if (mounted) showGlassSnackBar(context, 'Error al exportar: $e', icon: Icons.error_outline, iconColor: Colors.redAccent);
+      if (mounted)
+        showGlassSnackBar(context, 'Error al exportar: $e',
+            icon: Icons.error_outline, iconColor: Colors.redAccent);
     }
   }
 
@@ -535,17 +590,22 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
     _hideContextMenu();
     if (_selectedImages.isEmpty) return;
 
-    String? selectedDirectory = await FilePicker.platform.getDirectoryPath(dialogTitle: 'Seleccionar carpeta para restaurar');
+    String? selectedDirectory = await FilePicker.platform
+        .getDirectoryPath(dialogTitle: 'Seleccionar carpeta para restaurar');
     if (selectedDirectory == null) return;
-    
+
     final destinationDir = Directory(selectedDirectory);
     final count = _selectedImages.length;
-    final itemText = count == 1 ? 'el elemento seleccionado' : 'los $count elementos seleccionados';
-    
+    final itemText = count == 1
+        ? 'el elemento seleccionado'
+        : 'los $count elementos seleccionados';
+
     bool confirm = await _showConfirmationDialog(
           title: 'Confirmar Restauración',
-          content: '¿Deseas mover $itemText a la carpeta seleccionada y quitarlos de la bóveda?',
-        ) ?? false;
+          content:
+              '¿Deseas mover $itemText a la carpeta seleccionada y quitarlos de la bóveda?',
+        ) ??
+        false;
 
     if (!confirm) {
       setState(() => _selectedImages.clear());
@@ -564,11 +624,14 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
       }
     }
 
-    if (mounted) showGlassSnackBar(context, '$count elemento(s) restaurado(s) con éxito a ${destinationDir.path}.');
+    if (mounted)
+      showGlassSnackBar(context,
+          '$count elemento(s) restaurado(s) con éxito a ${destinationDir.path}.');
     setState(() {
       _selectedImages.clear();
       if (_selectedCharacter != null) {
-        _associatedImages = widget.metadataService.getImagesForCharacter(_selectedCharacter!.id!);
+        _associatedImages = widget.metadataService
+            .getImagesForCharacter(_selectedCharacter!.id!);
       }
     });
   }
@@ -578,43 +641,52 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
     if (!file.existsSync()) return;
 
     String name = _getDeobfuscatedName(p.basename(file.path));
-    final realExt = _getRealExtension(file.path).replaceAll('.', '').toUpperCase();
-    String type = _isVideo(file.path) ? '$realExt (Video)' : '$realExt (Imagen)';
-    
+    final realExt =
+        _getRealExtension(file.path).replaceAll('.', '').toUpperCase();
+    String type =
+        _isVideo(file.path) ? '$realExt (Video)' : '$realExt (Imagen)';
+
     String sizeStr = '--';
     String dateStr = 'Desconocido';
     String addedDateStr = '--';
-    
+
     int rating = 0;
     List<String> tags = [];
-    List<LocalCharacter> characterProfiles = []; 
+    List<LocalCharacter> characterProfiles = [];
 
     try {
       final stat = await file.stat();
-      dateStr = "${stat.modified.day.toString().padLeft(2, '0')}/${stat.modified.month.toString().padLeft(2, '0')}/${stat.modified.year} ${stat.modified.hour.toString().padLeft(2, '0')}:${stat.modified.minute.toString().padLeft(2, '0')}";
-      
+      dateStr =
+          "${stat.modified.day.toString().padLeft(2, '0')}/${stat.modified.month.toString().padLeft(2, '0')}/${stat.modified.year} ${stat.modified.hour.toString().padLeft(2, '0')}:${stat.modified.minute.toString().padLeft(2, '0')}";
+
       int bytes = stat.size;
-      if (bytes < 1024) sizeStr = '$bytes B';
-      else if (bytes < 1024 * 1024) sizeStr = '${(bytes / 1024).toStringAsFixed(2)} KB';
-      else if (bytes < 1024 * 1024 * 1024) sizeStr = '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
-      else sizeStr = '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+      if (bytes < 1024)
+        sizeStr = '$bytes B';
+      else if (bytes < 1024 * 1024)
+        sizeStr = '${(bytes / 1024).toStringAsFixed(2)} KB';
+      else if (bytes < 1024 * 1024 * 1024)
+        sizeStr = '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+      else
+        sizeStr = '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
 
       final metadata = widget.metadataService.getMetadataForImage(imageId);
       rating = metadata.rating;
       tags = metadata.tags;
-      
+
       for (int id in metadata.characterIds) {
         final char = await widget.metadataService.getCharacterById(id);
         if (char != null) characterProfiles.add(char);
       }
-      
+
       if (metadata.addedTimestamp > 0) {
-        final addedDate = DateTime.fromMillisecondsSinceEpoch(metadata.addedTimestamp);
-        addedDateStr = "${addedDate.day.toString().padLeft(2, '0')}/${addedDate.month.toString().padLeft(2, '0')}/${addedDate.year} ${addedDate.hour.toString().padLeft(2, '0')}:${addedDate.minute.toString().padLeft(2, '0')}";
+        final addedDate =
+            DateTime.fromMillisecondsSinceEpoch(metadata.addedTimestamp);
+        addedDateStr =
+            "${addedDate.day.toString().padLeft(2, '0')}/${addedDate.month.toString().padLeft(2, '0')}/${addedDate.year} ${addedDate.hour.toString().padLeft(2, '0')}:${addedDate.minute.toString().padLeft(2, '0')}";
       } else {
-         addedDateStr = dateStr;
+        addedDateStr = dateStr;
       }
-    } catch(e) {
+    } catch (e) {
       debugPrint("Error leyendo propiedades: $e");
     }
 
@@ -624,98 +696,131 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
         barrierColor: Colors.black.withOpacity(0.4),
         builder: (context) {
           bool isTagsExpanded = false;
-          return StatefulBuilder(
-            builder: (context, setState) {
-              return Dialog(
-                backgroundColor: Colors.transparent,
-                elevation: 0,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(14.0),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                    child: Container(
-                      width: 380,
-                      constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.8),
-                      padding: const EdgeInsets.all(24),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF252525).withOpacity(0.65),
-                        border: Border.all(color: Colors.white12, width: 0.5),
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Center(child: Text('Propiedades', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white))),
-                          const SizedBox(height: 20),
-                          Flexible(
-                            child: SingleChildScrollView(
-                              physics: const BouncingScrollPhysics(),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  _buildPropertyRow('Nombre:', name),
-                                  _buildPropertyRow('Tipo:', type),
-                                  _buildPropertyRow('Tamaño:', sizeStr),
-                                  _buildPropertyRow('Modificado:', dateStr),
-                                  
-                                  const Divider(color: Colors.white12, height: 24, thickness: 1),
-                                  const Text('Metadatos del Vórtice', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF0A84FF), fontSize: 13)),
-                                  const SizedBox(height: 12),
-                                  _buildPropertyRow('Añadido:', addedDateStr),
-                                  _buildPropertyRow('Estrellas:', rating > 0 ? '$rating' : 'Sin calificar'),
-                                  
-                                  _buildTagsPropertyRow('Etiquetas:', tags, isTagsExpanded, () {
-                                    setState(() { isTagsExpanded = !isTagsExpanded; });
+          return StatefulBuilder(builder: (context, setState) {
+            return Dialog(
+              backgroundColor: Colors.transparent,
+              elevation: 0,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(14.0),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                  child: Container(
+                    width: 380,
+                    constraints: BoxConstraints(
+                        maxHeight: MediaQuery.of(context).size.height * 0.8),
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF252525).withOpacity(0.65),
+                      border: Border.all(color: Colors.white12, width: 0.5),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Center(
+                            child: Text('Propiedades',
+                                style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.white))),
+                        const SizedBox(height: 20),
+                        Flexible(
+                          child: SingleChildScrollView(
+                            physics: const BouncingScrollPhysics(),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                _buildPropertyRow('Nombre:', name),
+                                _buildPropertyRow('Tipo:', type),
+                                _buildPropertyRow('Tamaño:', sizeStr),
+                                _buildPropertyRow('Modificado:', dateStr),
+                                const Divider(
+                                    color: Colors.white12,
+                                    height: 24,
+                                    thickness: 1),
+                                const Text('Metadatos del Vórtice',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        color: Color(0xFF0A84FF),
+                                        fontSize: 13)),
+                                const SizedBox(height: 12),
+                                _buildPropertyRow('Añadido:', addedDateStr),
+                                _buildPropertyRow('Estrellas:',
+                                    rating > 0 ? '$rating' : 'Sin calificar'),
+                                _buildTagsPropertyRow(
+                                    'Etiquetas:', tags, isTagsExpanded, () {
+                                  setState(() {
+                                    isTagsExpanded = !isTagsExpanded;
+                                  });
+                                }),
+                                if (characterProfiles.isNotEmpty) ...[
+                                  ...characterProfiles.map((charProfile) {
+                                    return Padding(
+                                      padding: const EdgeInsets.only(top: 16.0),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          const Divider(
+                                              color: Colors.white12,
+                                              height: 10,
+                                              thickness: 0.5),
+                                          Row(
+                                            children: [
+                                              const Icon(
+                                                  Icons.account_circle_outlined,
+                                                  size: 14,
+                                                  color: Color(0xFF32D74B)),
+                                              const SizedBox(width: 6),
+                                              Text(
+                                                  'Perfil: ${charProfile.name}',
+                                                  style: const TextStyle(
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                      color: Color(0xFF32D74B),
+                                                      fontSize: 13)),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 8),
+                                          _buildPropertyRow('Franquicia:',
+                                              charProfile.franchise),
+                                          _buildPropertyRow(
+                                              'Género:', charProfile.gender),
+                                          _buildPropertyRow(
+                                              'Edad:', charProfile.age),
+                                          _buildPropertyRow('Cumpleaños:',
+                                              charProfile.birthday),
+                                          ...charProfile.customFields.entries
+                                              .map((field) {
+                                            return _buildPropertyRow(
+                                                '${field.key}:', field.value);
+                                          }),
+                                        ],
+                                      ),
+                                    );
                                   }),
-                                  
-                                  if (characterProfiles.isNotEmpty) ...[
-                                    ...characterProfiles.map((charProfile) {
-                                      return Padding(
-                                        padding: const EdgeInsets.only(top: 16.0),
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            const Divider(color: Colors.white12, height: 10, thickness: 0.5),
-                                            Row(
-                                              children: [
-                                                const Icon(Icons.account_circle_outlined, size: 14, color: Color(0xFF32D74B)),
-                                                const SizedBox(width: 6),
-                                                Text('Perfil: ${charProfile.name}', style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF32D74B), fontSize: 13)),
-                                              ],
-                                            ),
-                                            const SizedBox(height: 8),
-                                            _buildPropertyRow('Franquicia:', charProfile.franchise),
-                                            _buildPropertyRow('Género:', charProfile.gender),
-                                            _buildPropertyRow('Edad:', charProfile.age),
-                                            _buildPropertyRow('Cumpleaños:', charProfile.birthday),
-                                            ...charProfile.customFields.entries.map((field) {
-                                              return _buildPropertyRow('${field.key}:', field.value);
-                                            }),
-                                          ],
-                                        ),
-                                      );
-                                    }),
-                                  ],
                                 ],
-                              ),
+                              ],
                             ),
                           ),
-                          const SizedBox(height: 24),
-                          Center(
-                            child: TextButton(
-                              onPressed: () => Navigator.of(context).pop(),
-                              style: TextButton.styleFrom(foregroundColor: const Color(0xFF0A84FF)),
-                              child: const Text('Aceptar', style: TextStyle(fontWeight: FontWeight.w600)),
-                            ),
-                          )
-                        ],
-                      ),
+                        ),
+                        const SizedBox(height: 24),
+                        Center(
+                          child: TextButton(
+                            onPressed: () => Navigator.of(context).pop(),
+                            style: TextButton.styleFrom(
+                                foregroundColor: const Color(0xFF0A84FF)),
+                            child: const Text('Aceptar',
+                                style: TextStyle(fontWeight: FontWeight.w600)),
+                          ),
+                        )
+                      ],
                     ),
                   ),
                 ),
-              );
-            }
-          );
+              ),
+            );
+          });
         },
       );
     }
@@ -729,8 +834,10 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
     currentName = _getDeobfuscatedName(currentName);
     currentName = p.basenameWithoutExtension(currentName);
 
-    final TextEditingController renameController = TextEditingController(text: currentName);
-    renameController.selection = TextSelection(baseOffset: 0, extentOffset: currentName.length);
+    final TextEditingController renameController =
+        TextEditingController(text: currentName);
+    renameController.selection =
+        TextSelection(baseOffset: 0, extentOffset: currentName.length);
 
     final bool? confirm = await showDialog<bool>(
       context: context,
@@ -753,7 +860,11 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Text('Renombrar', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white)),
+                    const Text('Renombrar',
+                        style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white)),
                     const SizedBox(height: 16),
                     TextField(
                       controller: renameController,
@@ -763,8 +874,11 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
                       decoration: InputDecoration(
                         filled: true,
                         fillColor: const Color(0xFF1C1C1E).withOpacity(0.8),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 12),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide.none),
                       ),
                     ),
                     const SizedBox(height: 24),
@@ -773,13 +887,17 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
                       children: [
                         TextButton(
                           onPressed: () => Navigator.of(context).pop(false),
-                          style: TextButton.styleFrom(foregroundColor: Colors.white70),
-                          child: const Text('Cancelar', style: TextStyle(fontWeight: FontWeight.w500)),
+                          style: TextButton.styleFrom(
+                              foregroundColor: Colors.white70),
+                          child: const Text('Cancelar',
+                              style: TextStyle(fontWeight: FontWeight.w500)),
                         ),
                         TextButton(
                           onPressed: () => Navigator.of(context).pop(true),
-                          style: TextButton.styleFrom(foregroundColor: const Color(0xFF0A84FF)),
-                          child: const Text('Guardar', style: TextStyle(fontWeight: FontWeight.w600)),
+                          style: TextButton.styleFrom(
+                              foregroundColor: const Color(0xFF0A84FF)),
+                          child: const Text('Guardar',
+                              style: TextStyle(fontWeight: FontWeight.w600)),
                         ),
                       ],
                     )
@@ -792,40 +910,48 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
       },
     );
 
-    if (confirm == true && renameController.text.isNotEmpty && renameController.text.trim() != currentName) {
+    if (confirm == true &&
+        renameController.text.isNotEmpty &&
+        renameController.text.trim() != currentName) {
       final newNameInput = renameController.text.trim();
       final realExt = _getRealExtension(file.path);
       final nameWithExt = '$newNameInput$realExt';
       final finalNewName = _obfuscateName(nameWithExt);
 
       final destinationDir = Directory(p.dirname(file.path));
-      final finalUniquePath = await _getUniquePath(destinationDir, finalNewName);
+      final finalUniquePath =
+          await _getUniquePath(destinationDir, finalNewName);
 
       try {
         final newId = p.relative(finalUniquePath, from: widget.vaultRootPath);
 
-        await widget.thumbnailService.renameThumbnail(file.path, finalUniquePath);
+        await widget.thumbnailService
+            .renameThumbnail(file.path, finalUniquePath);
         await _moveFileRobustly(file, finalUniquePath);
         await widget.metadataService.updateImagePath(imageId, newId);
 
         setState(() {
           _selectedImages.clear();
           if (_selectedCharacter != null) {
-            _associatedImages = widget.metadataService.getImagesForCharacter(_selectedCharacter!.id!);
+            _associatedImages = widget.metadataService
+                .getImagesForCharacter(_selectedCharacter!.id!);
           }
         });
       } catch (e) {
-        if (mounted) showGlassSnackBar(context, 'Error al renombrar: $e', icon: Icons.error_outline, iconColor: Colors.redAccent);
+        if (mounted)
+          showGlassSnackBar(context, 'Error al renombrar: $e',
+              icon: Icons.error_outline, iconColor: Colors.redAccent);
       }
     }
   }
 
-  Future<bool?> _showConfirmationDialog({required String title, required String content}) {
+  Future<bool?> _showConfirmationDialog(
+      {required String title, required String content}) {
     return showDialog<bool>(
       context: context,
-      barrierColor: Colors.black.withOpacity(0.4), 
+      barrierColor: Colors.black.withOpacity(0.4),
       builder: (context) => Dialog(
-        backgroundColor: Colors.transparent, 
+        backgroundColor: Colors.transparent,
         elevation: 0,
         child: ClipRRect(
           borderRadius: BorderRadius.circular(14.0),
@@ -835,28 +961,40 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
               width: 350,
               padding: const EdgeInsets.all(24),
               decoration: BoxDecoration(
-                color: const Color(0xFF252525).withOpacity(0.65), 
+                color: const Color(0xFF252525).withOpacity(0.65),
                 border: Border.all(color: Colors.white12, width: 0.5),
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white), textAlign: TextAlign.center),
+                  Text(title,
+                      style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white),
+                      textAlign: TextAlign.center),
                   const SizedBox(height: 12),
-                  Text(content, style: const TextStyle(fontSize: 14, color: Colors.white70), textAlign: TextAlign.center),
+                  Text(content,
+                      style:
+                          const TextStyle(fontSize: 14, color: Colors.white70),
+                      textAlign: TextAlign.center),
                   const SizedBox(height: 24),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
                       TextButton(
                         onPressed: () => Navigator.of(context).pop(false),
-                        style: TextButton.styleFrom(foregroundColor: Colors.white70),
-                        child: const Text('Cancelar', style: TextStyle(fontWeight: FontWeight.w500)),
+                        style: TextButton.styleFrom(
+                            foregroundColor: Colors.white70),
+                        child: const Text('Cancelar',
+                            style: TextStyle(fontWeight: FontWeight.w500)),
                       ),
                       TextButton(
                         onPressed: () => Navigator.of(context).pop(true),
-                        style: TextButton.styleFrom(foregroundColor: const Color(0xFF0A84FF)), 
-                        child: const Text('Aceptar', style: TextStyle(fontWeight: FontWeight.w600)),
+                        style: TextButton.styleFrom(
+                            foregroundColor: const Color(0xFF0A84FF)),
+                        child: const Text('Aceptar',
+                            style: TextStyle(fontWeight: FontWeight.w600)),
                       ),
                     ],
                   )
@@ -875,14 +1013,23 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(width: 85, child: Text(label, style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.white54, fontSize: 13))),
-          Expanded(child: Text(value, style: const TextStyle(color: Colors.white, fontSize: 13))),
+          SizedBox(
+              width: 85,
+              child: Text(label,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white54,
+                      fontSize: 13))),
+          Expanded(
+              child: Text(value,
+                  style: const TextStyle(color: Colors.white, fontSize: 13))),
         ],
       ),
     );
   }
 
-  Widget _buildTagsPropertyRow(String label, List<String> tags, bool isExpanded, VoidCallback onToggle) {
+  Widget _buildTagsPropertyRow(
+      String label, List<String> tags, bool isExpanded, VoidCallback onToggle) {
     if (tags.isEmpty) return _buildPropertyRow(label, 'Ninguna');
 
     final displayTags = isExpanded ? tags : tags.take(3).toList();
@@ -893,21 +1040,40 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(width: 85, child: Text(label, style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.white54, fontSize: 13))),
+          SizedBox(
+              width: 85,
+              child: Text(label,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white54,
+                      fontSize: 13))),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(displayTags.join(', '), style: const TextStyle(color: Colors.white, fontSize: 13)),
+                Text(displayTags.join(', '),
+                    style: const TextStyle(color: Colors.white, fontSize: 13)),
                 if (!isExpanded && hiddenCount > 0)
                   InkWell(
                     onTap: onToggle,
-                    child: Padding(padding: const EdgeInsets.only(top: 4.0), child: Text('Ver $hiddenCount más...', style: const TextStyle(color: Color(0xFF0A84FF), fontSize: 12, fontWeight: FontWeight.w500))),
+                    child: Padding(
+                        padding: const EdgeInsets.only(top: 4.0),
+                        child: Text('Ver $hiddenCount más...',
+                            style: const TextStyle(
+                                color: Color(0xFF0A84FF),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500))),
                   ),
                 if (isExpanded && tags.length > 3)
                   InkWell(
                     onTap: onToggle,
-                    child: const Padding(padding: const EdgeInsets.only(top: 4.0), child: Text('Ocultar', style: TextStyle(color: Color(0xFF0A84FF), fontSize: 12, fontWeight: FontWeight.w500))),
+                    child: const Padding(
+                        padding: const EdgeInsets.only(top: 4.0),
+                        child: Text('Ocultar',
+                            style: TextStyle(
+                                color: Color(0xFF0A84FF),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500))),
                   ),
               ],
             ),
@@ -920,53 +1086,66 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
   // --- MÉTODOS DE EDICIÓN DE PERSONAJES EXISTENTES (Panel principal) ---
   Future<void> _deleteCharacter(LocalCharacter char) async {
     final bool confirm = await showDialog<bool>(
-      context: context,
-      barrierColor: Colors.black.withOpacity(0.4),
-      builder: (context) => Dialog(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(14.0),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-            child: Container(
-              width: 320,
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: const Color(0xFF2C2C2E).withOpacity(0.8),
-                border: Border.all(color: Colors.white12, width: 0.5),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text('Eliminar Perfil', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white)),
-                  const SizedBox(height: 16),
-                  Text(
-                    '¿Borrar a "${char.name}"?\nSe desvinculará de todas las imágenes.',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.white70),
+          context: context,
+          barrierColor: Colors.black.withOpacity(0.4),
+          builder: (context) => Dialog(
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(14.0),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                child: Container(
+                  width: 320,
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF2C2C2E).withOpacity(0.8),
+                    border: Border.all(color: Colors.white12, width: 0.5),
                   ),
-                  const SizedBox(height: 24),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar', style: TextStyle(color: Colors.white70))),
-                      TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Eliminar', style: TextStyle(color: Colors.redAccent))),
+                      const Text('Eliminar Perfil',
+                          style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white)),
+                      const SizedBox(height: 16),
+                      Text(
+                        '¿Borrar a "${char.name}"?\nSe desvinculará de todas las imágenes.',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white70),
+                      ),
+                      const SizedBox(height: 24),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          TextButton(
+                              onPressed: () => Navigator.pop(context, false),
+                              child: const Text('Cancelar',
+                                  style: TextStyle(color: Colors.white70))),
+                          TextButton(
+                              onPressed: () => Navigator.pop(context, true),
+                              child: const Text('Eliminar',
+                                  style: TextStyle(color: Colors.redAccent))),
+                        ],
+                      ),
                     ],
                   ),
-                ],
+                ),
               ),
             ),
           ),
-        ),
-      ),
-    ) ?? false;
+        ) ??
+        false;
 
     if (confirm) {
       await widget.metadataService.deleteCharacter(char.id!);
       _selectCharacter(null);
       await _loadCharacters();
-      if (mounted) showGlassSnackBar(context, 'Perfil eliminado.', icon: Icons.delete_outline);
+      if (mounted)
+        showGlassSnackBar(context, 'Perfil eliminado.',
+            icon: Icons.delete_outline);
     }
   }
 
@@ -983,30 +1162,45 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
     if (updated != null) {
       await widget.metadataService.updateCharacter(updated);
       await _loadCharacters();
-      if (mounted) showGlassSnackBar(context, 'Perfil actualizado.', icon: Icons.save);
+      if (mounted)
+        showGlassSnackBar(context, 'Perfil actualizado.', icon: Icons.save);
     }
   }
 
   // --- WIDGET AUXILIAR PARA LA LISTA ---
-  Widget _buildCharacterTile(LocalCharacter char, bool isSelected, {bool isGrouped = false}) {
+  Widget _buildCharacterTile(LocalCharacter char, bool isSelected,
+      {bool isGrouped = false}) {
     return ListTile(
       contentPadding: EdgeInsets.only(left: isGrouped ? 32 : 16, right: 16),
       selected: isSelected,
       selectedTileColor: const Color(0xFF0A84FF).withOpacity(0.15),
       leading: Container(
-        width: 36, height: 36,
+        width: 36,
+        height: 36,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           color: Colors.black26,
-          border: Border.all(color: isSelected ? const Color(0xFF0A84FF) : Colors.white24),
+          border: Border.all(
+              color: isSelected ? const Color(0xFF0A84FF) : Colors.white24),
           image: char.avatarPath != null && File(char.avatarPath!).existsSync()
-              ? DecorationImage(image: FileImage(File(char.avatarPath!)), fit: BoxFit.cover)
+              ? DecorationImage(
+                  image: FileImage(File(char.avatarPath!)), fit: BoxFit.cover)
               : null,
         ),
-        child: char.avatarPath == null ? const Icon(Icons.person, color: Colors.white38, size: 20) : null,
+        child: char.avatarPath == null
+            ? const Icon(Icons.person, color: Colors.white38, size: 20)
+            : null,
       ),
-      title: Text(char.name, style: const TextStyle(fontSize: 13, color: Colors.white), maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: isGrouped ? null : Text(char.franchise, style: const TextStyle(fontSize: 11, color: Colors.white54), maxLines: 1, overflow: TextOverflow.ellipsis),
+      title: Text(char.name,
+          style: const TextStyle(fontSize: 13, color: Colors.white),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis),
+      subtitle: isGrouped
+          ? null
+          : Text(char.franchise,
+              style: const TextStyle(fontSize: 11, color: Colors.white54),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis),
       onTap: () => _selectCharacter(char),
     );
   }
@@ -1016,7 +1210,8 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF000000),
       appBar: AppBar(
-        title: const Text('Administración de Perfiles', style: TextStyle(fontSize: 15)),
+        title: const Text('Administración de Perfiles',
+            style: TextStyle(fontSize: 15)),
         backgroundColor: const Color(0xE61C1C1E),
         elevation: 0,
       ),
@@ -1027,36 +1222,43 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
             width: 320,
             decoration: const BoxDecoration(
               color: Color(0xFF151515),
-              border: Border(right: BorderSide(color: Colors.white12, width: 1)),
+              border:
+                  Border(right: BorderSide(color: Colors.white12, width: 1)),
             ),
             child: Column(
               children: [
                 Padding(
-                  padding: const EdgeInsets.only(left: 16.0, right: 16.0, top: 16.0, bottom: 8.0),
+                  padding: const EdgeInsets.only(
+                      left: 16.0, right: 16.0, top: 16.0, bottom: 8.0),
                   child: TextField(
                     controller: _searchCtrl,
                     style: const TextStyle(color: Colors.white, fontSize: 13),
                     decoration: InputDecoration(
                       filled: true,
                       fillColor: const Color(0xFF1C1C1E),
-                      prefixIcon: const Icon(Icons.search, color: Colors.white54, size: 18),
+                      prefixIcon: const Icon(Icons.search,
+                          color: Colors.white54, size: 18),
                       suffixIcon: _searchCtrl.text.isNotEmpty
                           ? IconButton(
-                              icon: const Icon(Icons.cancel, color: Colors.white54, size: 16),
+                              icon: const Icon(Icons.cancel,
+                                  color: Colors.white54, size: 16),
                               onPressed: () => _searchCtrl.clear(),
                             )
                           : null,
                       contentPadding: const EdgeInsets.symmetric(vertical: 0),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide.none),
                       hintText: 'Buscar...',
                       hintStyle: const TextStyle(color: Colors.white54),
                     ),
                   ),
                 ),
-                
+
                 // --- NUEVO: INTERRUPTOR (TOGGLE) PERSONAJES / FRANQUICIAS ---
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16.0, vertical: 8.0),
                   child: Container(
                     height: 32,
                     decoration: BoxDecoration(
@@ -1067,35 +1269,59 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
                       children: [
                         Expanded(
                           child: GestureDetector(
-                            onTap: () => setState(() => _groupByFranchise = false),
+                            onTap: () =>
+                                setState(() => _groupByFranchise = false),
                             child: Container(
                               decoration: BoxDecoration(
-                                color: !_groupByFranchise ? const Color(0xFF0A84FF).withOpacity(0.2) : Colors.transparent,
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(
-                                  color: !_groupByFranchise ? const Color(0xFF0A84FF) : Colors.transparent,
-                                  width: 1,
-                                )
-                              ),
+                                  color: !_groupByFranchise
+                                      ? const Color(0xFF0A84FF).withOpacity(0.2)
+                                      : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                    color: !_groupByFranchise
+                                        ? const Color(0xFF0A84FF)
+                                        : Colors.transparent,
+                                    width: 1,
+                                  )),
                               alignment: Alignment.center,
-                              child: Text('Personajes', style: TextStyle(fontSize: 12, color: !_groupByFranchise ? const Color(0xFF0A84FF) : Colors.white54, fontWeight: !_groupByFranchise ? FontWeight.bold : FontWeight.normal)),
+                              child: Text('Personajes',
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: !_groupByFranchise
+                                          ? const Color(0xFF0A84FF)
+                                          : Colors.white54,
+                                      fontWeight: !_groupByFranchise
+                                          ? FontWeight.bold
+                                          : FontWeight.normal)),
                             ),
                           ),
                         ),
                         Expanded(
                           child: GestureDetector(
-                            onTap: () => setState(() => _groupByFranchise = true),
+                            onTap: () =>
+                                setState(() => _groupByFranchise = true),
                             child: Container(
                               decoration: BoxDecoration(
-                                color: _groupByFranchise ? const Color(0xFF0A84FF).withOpacity(0.2) : Colors.transparent,
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(
-                                  color: _groupByFranchise ? const Color(0xFF0A84FF) : Colors.transparent,
-                                  width: 1,
-                                )
-                              ),
+                                  color: _groupByFranchise
+                                      ? const Color(0xFF0A84FF).withOpacity(0.2)
+                                      : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                    color: _groupByFranchise
+                                        ? const Color(0xFF0A84FF)
+                                        : Colors.transparent,
+                                    width: 1,
+                                  )),
                               alignment: Alignment.center,
-                              child: Text('Franquicias', style: TextStyle(fontSize: 12, color: _groupByFranchise ? const Color(0xFF0A84FF) : Colors.white54, fontWeight: _groupByFranchise ? FontWeight.bold : FontWeight.normal)),
+                              child: Text('Franquicias',
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: _groupByFranchise
+                                          ? const Color(0xFF0A84FF)
+                                          : Colors.white54,
+                                      fontWeight: _groupByFranchise
+                                          ? FontWeight.bold
+                                          : FontWeight.normal)),
                             ),
                           ),
                         ),
@@ -1107,17 +1333,25 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
                 // --- LISTADO EXPANDIDO O PLANO ---
                 Expanded(
                   child: _filteredCharacters.isEmpty
-                      ? const Center(child: Text('No hay perfiles.', style: TextStyle(color: Colors.white54)))
-                      : (!_groupByFranchise) 
+                      ? const Center(
+                          child: Text('No hay perfiles.',
+                              style: TextStyle(color: Colors.white54)))
+                      : (!_groupByFranchise)
                           // VISTA PLANA ORIGINAL
                           ? ListView.separated(
                               physics: const BouncingScrollPhysics(),
                               itemCount: _filteredCharacters.length,
-                              separatorBuilder: (_, __) => const Divider(height: 1, indent: 16, endIndent: 16, color: Colors.white12),
+                              separatorBuilder: (_, __) => const Divider(
+                                  height: 1,
+                                  indent: 16,
+                                  endIndent: 16,
+                                  color: Colors.white12),
                               itemBuilder: (context, index) {
                                 final char = _filteredCharacters[index];
-                                final isSelected = _selectedCharacter?.id == char.id;
-                                return _buildCharacterTile(char, isSelected, isGrouped: false);
+                                final isSelected =
+                                    _selectedCharacter?.id == char.id;
+                                return _buildCharacterTile(char, isSelected,
+                                    isGrouped: false);
                               },
                             )
                           // VISTA AGRUPADA POR FRANQUICIAS
@@ -1125,23 +1359,38 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
                               physics: const BouncingScrollPhysics(),
                               itemCount: _groupedCharacters.keys.length,
                               itemBuilder: (context, index) {
-                                final franchise = _groupedCharacters.keys.elementAt(index);
+                                final franchise =
+                                    _groupedCharacters.keys.elementAt(index);
                                 final chars = _groupedCharacters[franchise]!;
-                                final bool isSearchActive = _searchCtrl.text.isNotEmpty;
-                                
+                                final bool isSearchActive =
+                                    _searchCtrl.text.isNotEmpty;
+
                                 return Theme(
-                                  data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                                  data: Theme.of(context).copyWith(
+                                      dividerColor: Colors.transparent),
                                   child: ExpansionTile(
-                                    key: PageStorageKey('franchise_$franchise'), 
-                                    initiallyExpanded: isSearchActive, 
+                                    key: PageStorageKey('franchise_$franchise'),
+                                    initiallyExpanded: isSearchActive,
                                     iconColor: const Color(0xFF0A84FF),
                                     collapsedIconColor: Colors.white54,
-                                    leading: const Icon(Icons.folder_special_outlined, size: 22),
-                                    title: Text(franchise, style: const TextStyle(fontSize: 13, color: Colors.white, fontWeight: FontWeight.bold)),
-                                    subtitle: Text('${chars.length} perfil(es)', style: const TextStyle(fontSize: 11, color: Colors.white54)),
+                                    leading: const Icon(
+                                        Icons.folder_special_outlined,
+                                        size: 22),
+                                    title: Text(franchise,
+                                        style: const TextStyle(
+                                            fontSize: 13,
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold)),
+                                    subtitle: Text('${chars.length} perfil(es)',
+                                        style: const TextStyle(
+                                            fontSize: 11,
+                                            color: Colors.white54)),
                                     children: chars.map((char) {
-                                      final isSelected = _selectedCharacter?.id == char.id;
-                                      return _buildCharacterTile(char, isSelected, isGrouped: true);
+                                      final isSelected =
+                                          _selectedCharacter?.id == char.id;
+                                      return _buildCharacterTile(
+                                          char, isSelected,
+                                          isGrouped: true);
                                     }).toList(),
                                   ),
                                 );
@@ -1159,9 +1408,12 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(Icons.badge_outlined, size: 80, color: Colors.white12),
+                        Icon(Icons.badge_outlined,
+                            size: 80, color: Colors.white12),
                         SizedBox(height: 16),
-                        Text('Selecciona un perfil para ver sus detalles', style: TextStyle(color: Colors.white38, fontSize: 16)),
+                        Text('Selecciona un perfil para ver sus detalles',
+                            style:
+                                TextStyle(color: Colors.white38, fontSize: 16)),
                       ],
                     ),
                   )
@@ -1175,183 +1427,259 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
                       });
                     },
                     child: CustomScrollView(
-                        physics: const BouncingScrollPhysics(),
-                        slivers: [
-                          SliverToBoxAdapter(
-                            child: Container(
-                              padding: const EdgeInsets.all(32),
-                              decoration: const BoxDecoration(
-                                color: Color(0xFF1A1A1C),
-                                border: Border(bottom: BorderSide(color: Colors.white12, width: 1)),
-                              ),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Container(
-                                    width: 100, height: 100,
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: Colors.black45,
-                                      border: Border.all(color: const Color(0xFF0A84FF), width: 2),
-                                      image: _selectedCharacter!.avatarPath != null && File(_selectedCharacter!.avatarPath!).existsSync()
-                                          ? DecorationImage(image: FileImage(File(_selectedCharacter!.avatarPath!)), fit: BoxFit.cover)
-                                          : null,
-                                    ),
-                                    child: _selectedCharacter!.avatarPath == null ? const Icon(Icons.person, color: Colors.white38, size: 50) : null,
+                      physics: const BouncingScrollPhysics(),
+                      slivers: [
+                        SliverToBoxAdapter(
+                          child: Container(
+                            padding: const EdgeInsets.all(32),
+                            decoration: const BoxDecoration(
+                              color: Color(0xFF1A1A1C),
+                              border: Border(
+                                  bottom: BorderSide(
+                                      color: Colors.white12, width: 1)),
+                            ),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Container(
+                                  width: 100,
+                                  height: 100,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: Colors.black45,
+                                    border: Border.all(
+                                        color: const Color(0xFF0A84FF),
+                                        width: 2),
+                                    image: _selectedCharacter!.avatarPath !=
+                                                null &&
+                                            File(_selectedCharacter!
+                                                    .avatarPath!)
+                                                .existsSync()
+                                        ? DecorationImage(
+                                            image: FileImage(File(
+                                                _selectedCharacter!
+                                                    .avatarPath!)),
+                                            fit: BoxFit.cover)
+                                        : null,
                                   ),
-                                  const SizedBox(width: 24),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Row(
-                                          children: [
-                                            Expanded(
-                                              child: Text(
-                                                _selectedCharacter!.name,
-                                                style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white),
-                                              ),
+                                  child: _selectedCharacter!.avatarPath == null
+                                      ? const Icon(Icons.person,
+                                          color: Colors.white38, size: 50)
+                                      : null,
+                                ),
+                                const SizedBox(width: 24),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              _selectedCharacter!.name,
+                                              style: const TextStyle(
+                                                  fontSize: 28,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.white),
                                             ),
-                                            Tooltip(
-                                              message: 'Editar Perfil',
-                                              child: InkWell(
-                                                borderRadius: BorderRadius.circular(8),
-                                                onTap: () => _editCharacter(_selectedCharacter!),
-                                                hoverColor: Colors.white12,
-                                                child: const Padding(
-                                                  padding: EdgeInsets.all(8.0),
-                                                  child: Icon(Icons.edit_note_rounded, color: Colors.white54, size: 22),
-                                                ),
-                                              ),
-                                            ),
-                                            const SizedBox(width: 8),
-                                            Tooltip(
-                                              message: 'Eliminar Perfil',
-                                              child: InkWell(
-                                                borderRadius: BorderRadius.circular(8),
-                                                onTap: () => _deleteCharacter(_selectedCharacter!),
-                                                hoverColor: Colors.redAccent.withOpacity(0.2),
-                                                child: const Padding(
-                                                  padding: EdgeInsets.all(8.0),
-                                                  child: Icon(Icons.delete_outline, color: Colors.white54, size: 22),
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(_selectedCharacter!.franchise, style: const TextStyle(fontSize: 16, color: Color(0xFF0A84FF), fontWeight: FontWeight.w500)),
-                                        const SizedBox(height: 16),
-                                        
-                                        Wrap(
-                                          spacing: 24, runSpacing: 12,
-                                          children: [
-                                            _buildAttribute(Icons.wc, 'Género', _selectedCharacter!.gender),
-                                            _buildAttribute(Icons.cake_outlined, 'Edad', _selectedCharacter!.age),
-                                            _buildAttribute(Icons.calendar_month_outlined, 'Cumpleaños', _selectedCharacter!.birthday),
-                                          ],
-                                        ),
-                                        if (_selectedCharacter!.customFields.isNotEmpty) ...[
-                                          const SizedBox(height: 12),
-                                          InkWell(
-                                            borderRadius: BorderRadius.circular(6),
-                                            onTap: () {
-                                              setState(() => _showExtraFields = !_showExtraFields);
-                                            },
-                                            child: Padding(
-                                              padding: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 2.0),
-                                              child: Row(
-                                                mainAxisSize: MainAxisSize.min,
-                                                children: [
-                                                  Text(
-                                                    _showExtraFields ? 'Mostrar menos' : 'Mostrar más (${_selectedCharacter!.customFields.length})',
-                                                    style: const TextStyle(color: Color(0xFF0A84FF), fontSize: 13, fontWeight: FontWeight.bold),
-                                                  ),
-                                                  Icon(
-                                                    _showExtraFields ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down, 
-                                                    color: const Color(0xFF0A84FF), 
-                                                    size: 16
-                                                  ),
-                                                ],
+                                          ),
+                                          Tooltip(
+                                            message: 'Editar Perfil',
+                                            child: InkWell(
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                              onTap: () => _editCharacter(
+                                                  _selectedCharacter!),
+                                              hoverColor: Colors.white12,
+                                              child: const Padding(
+                                                padding: EdgeInsets.all(8.0),
+                                                child: Icon(
+                                                    Icons.edit_note_rounded,
+                                                    color: Colors.white54,
+                                                    size: 22),
                                               ),
                                             ),
                                           ),
-                                          if (_showExtraFields)
-                                            Padding(
-                                              padding: const EdgeInsets.only(top: 12.0),
-                                              child: Wrap(
-                                                spacing: 24, runSpacing: 12,
-                                                children: _selectedCharacter!.customFields.entries.map((e) => _buildAttribute(Icons.info_outline, e.key, e.value)).toList(),
+                                          const SizedBox(width: 8),
+                                          Tooltip(
+                                            message: 'Eliminar Perfil',
+                                            child: InkWell(
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                              onTap: () => _deleteCharacter(
+                                                  _selectedCharacter!),
+                                              hoverColor: Colors.redAccent
+                                                  .withOpacity(0.2),
+                                              child: const Padding(
+                                                padding: EdgeInsets.all(8.0),
+                                                child: Icon(
+                                                    Icons.delete_outline,
+                                                    color: Colors.white54,
+                                                    size: 22),
                                               ),
                                             ),
+                                          ),
                                         ],
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          
-                          SliverToBoxAdapter(
-                            child: Padding(
-                              padding: const EdgeInsets.all(24.0),
-                              child: Text(
-                                'Apariciones en la Bóveda (${_associatedImages.length})', 
-                                style: const TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.bold)
-                              ),
-                            ),
-                          ),
-
-                          _associatedImages.isEmpty
-                              ? const SliverToBoxAdapter(
-                                  child: Padding(
-                                    padding: EdgeInsets.all(24.0),
-                                    child: Center(child: Text('Este perfil no está etiquetado en ninguna imagen.', style: TextStyle(color: Colors.white38))),
-                                  ),
-                                )
-                              : SliverPadding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 0),
-                                  sliver: SliverGrid(
-                                    gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                                      maxCrossAxisExtent: 180, // Tamaño de las miniaturas
-                                      mainAxisSpacing: 12,
-                                      crossAxisSpacing: 12,
-                                      childAspectRatio: 1,
-                                    ),
-                                    delegate: SliverChildBuilderDelegate(
-                                      (context, index) {
-                                        final imageId = _associatedImages[index];
-                                        final file = File(p.join(widget.vaultRootPath, imageId));
-                                        final isSelected = _selectedImages.contains(imageId);
-
-                                        return ImageItemWidget(
-                                          imageFile: file,
-                                          imageId: imageId,
-                                          isSelected: isSelected,
-                                          extent: 180.0,
-                                          metadataService: widget.metadataService,
-                                          thumbnailService: widget.thumbnailService,
-                                          showRatings: true,
-                                          showTagsCount: true,
-                                          onTap: () => _handleItemTap(imageId, index),
-                                          onSecondaryTapUp: (details) {
-                                            _hideContextMenu();
-                                            if (!_selectedImages.contains(imageId)) {
-                                              setState(() => _selectedImages = {imageId});
-                                              _shiftSelectionAnchorIndex = index;
-                                            }
-                                            _showContextMenu(context, details.globalPosition);
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(_selectedCharacter!.franchise,
+                                          style: const TextStyle(
+                                              fontSize: 16,
+                                              color: Color(0xFF0A84FF),
+                                              fontWeight: FontWeight.w500)),
+                                      const SizedBox(height: 16),
+                                      Wrap(
+                                        spacing: 24,
+                                        runSpacing: 12,
+                                        children: [
+                                          _buildAttribute(Icons.wc, 'Género',
+                                              _selectedCharacter!.gender),
+                                          _buildAttribute(Icons.cake_outlined,
+                                              'Edad', _selectedCharacter!.age),
+                                          _buildAttribute(
+                                              Icons.calendar_month_outlined,
+                                              'Cumpleaños',
+                                              _selectedCharacter!.birthday),
+                                        ],
+                                      ),
+                                      if (_selectedCharacter!
+                                          .customFields.isNotEmpty) ...[
+                                        const SizedBox(height: 12),
+                                        InkWell(
+                                          borderRadius:
+                                              BorderRadius.circular(6),
+                                          onTap: () {
+                                            setState(() => _showExtraFields =
+                                                !_showExtraFields);
                                           },
-                                        );
-                                      },
-                                      childCount: _associatedImages.length,
-                                    ),
+                                          child: Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                                vertical: 4.0, horizontal: 2.0),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Text(
+                                                  _showExtraFields
+                                                      ? 'Mostrar menos'
+                                                      : 'Mostrar más (${_selectedCharacter!.customFields.length})',
+                                                  style: const TextStyle(
+                                                      color: Color(0xFF0A84FF),
+                                                      fontSize: 13,
+                                                      fontWeight:
+                                                          FontWeight.bold),
+                                                ),
+                                                Icon(
+                                                    _showExtraFields
+                                                        ? Icons
+                                                            .keyboard_arrow_up
+                                                        : Icons
+                                                            .keyboard_arrow_down,
+                                                    color:
+                                                        const Color(0xFF0A84FF),
+                                                    size: 16),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                        if (_showExtraFields)
+                                          Padding(
+                                            padding: const EdgeInsets.only(
+                                                top: 12.0),
+                                            child: Wrap(
+                                              spacing: 24,
+                                              runSpacing: 12,
+                                              children: _selectedCharacter!
+                                                  .customFields.entries
+                                                  .map((e) => _buildAttribute(
+                                                      Icons.info_outline,
+                                                      e.key,
+                                                      e.value))
+                                                  .toList(),
+                                            ),
+                                          ),
+                                      ],
+                                    ],
                                   ),
                                 ),
-                          const SliverToBoxAdapter(child: SizedBox(height: 32)),
-                        ],
-                      ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24.0),
+                            child: Text(
+                                'Apariciones en la Bóveda (${_associatedImages.length})',
+                                style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                        _associatedImages.isEmpty
+                            ? const SliverToBoxAdapter(
+                                child: Padding(
+                                  padding: EdgeInsets.all(24.0),
+                                  child: Center(
+                                      child: Text(
+                                          'Este perfil no está etiquetado en ninguna imagen.',
+                                          style: TextStyle(
+                                              color: Colors.white38))),
+                                ),
+                              )
+                            : SliverPadding(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 24, vertical: 0),
+                                sliver: SliverGrid(
+                                  gridDelegate:
+                                      const SliverGridDelegateWithMaxCrossAxisExtent(
+                                    maxCrossAxisExtent:
+                                        180, // Tamaño de las miniaturas
+                                    mainAxisSpacing: 12,
+                                    crossAxisSpacing: 12,
+                                    childAspectRatio: 1,
+                                  ),
+                                  delegate: SliverChildBuilderDelegate(
+                                    (context, index) {
+                                      final imageId = _associatedImages[index];
+                                      final file = File(p.join(
+                                          widget.vaultRootPath, imageId));
+                                      final isSelected =
+                                          _selectedImages.contains(imageId);
+
+                                      return ImageItemWidget(
+                                        imageFile: file,
+                                        imageId: imageId,
+                                        isSelected: isSelected,
+                                        extent: 180.0,
+                                        metadataService: widget.metadataService,
+                                        thumbnailService:
+                                            widget.thumbnailService,
+                                        showRatings: true,
+                                        showTagsCount: true,
+                                        onTap: () =>
+                                            _handleItemTap(imageId, index),
+                                        onSecondaryTapUp: (details) {
+                                          _hideContextMenu();
+                                          if (!_selectedImages
+                                              .contains(imageId)) {
+                                            setState(() =>
+                                                _selectedImages = {imageId});
+                                            _shiftSelectionAnchorIndex = index;
+                                          }
+                                          _showContextMenu(
+                                              context, details.globalPosition);
+                                        },
+                                      );
+                                    },
+                                    childCount: _associatedImages.length,
+                                  ),
+                                ),
+                              ),
+                        const SliverToBoxAdapter(child: SizedBox(height: 32)),
+                      ],
+                    ),
                   ),
           ),
         ],
@@ -1360,8 +1688,9 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
   }
 
   Widget _buildAttribute(IconData icon, String label, String value) {
-    if (value.isEmpty || value == 'Desconocido' || value == 'Desconocida') return const SizedBox.shrink();
-    
+    if (value.isEmpty || value == 'Desconocido' || value == 'Desconocida')
+      return const SizedBox.shrink();
+
     return Text.rich(
       TextSpan(
         children: [
@@ -1373,12 +1702,13 @@ class _ProfileManagementScreenState extends State<ProfileManagementScreen> {
             ),
           ),
           TextSpan(
-            text: '$label: ', 
+            text: '$label: ',
             style: const TextStyle(color: Colors.white38, fontSize: 13),
           ),
           TextSpan(
-            text: value, 
-            style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+            text: value,
+            style: const TextStyle(
+                color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
           ),
         ],
       ),
@@ -1424,13 +1754,16 @@ class _GlobalCharacterEditDialog extends StatefulWidget {
   final LocalCharacter character;
   final MetadataService metadataService;
 
-  const _GlobalCharacterEditDialog({required this.character, required this.metadataService});
+  const _GlobalCharacterEditDialog(
+      {required this.character, required this.metadataService});
 
   @override
-  State<_GlobalCharacterEditDialog> createState() => _GlobalCharacterEditDialogState();
+  State<_GlobalCharacterEditDialog> createState() =>
+      _GlobalCharacterEditDialogState();
 }
 
-class _GlobalCharacterEditDialogState extends State<_GlobalCharacterEditDialog> {
+class _GlobalCharacterEditDialogState
+    extends State<_GlobalCharacterEditDialog> {
   late TextEditingController _nameCtrl;
   late TextEditingController _franchiseCtrl;
   late TextEditingController _genderCtrl;
@@ -1438,6 +1771,8 @@ class _GlobalCharacterEditDialogState extends State<_GlobalCharacterEditDialog> 
   late TextEditingController _birthdayCtrl;
   final List<TextEditingController> _customKeysCtrls = [];
   final List<TextEditingController> _customValuesCtrls = [];
+
+  String? _avatarPath;
 
   final ScrollController _editScrollController = ScrollController();
 
@@ -1456,12 +1791,13 @@ class _GlobalCharacterEditDialogState extends State<_GlobalCharacterEditDialog> 
   @override
   void initState() {
     super.initState();
+    _avatarPath = widget.character.avatarPath;
     _nameCtrl = TextEditingController(text: widget.character.name);
     _franchiseCtrl = TextEditingController(text: widget.character.franchise);
     _genderCtrl = TextEditingController(text: widget.character.gender);
     _ageCtrl = TextEditingController(text: widget.character.age);
     _birthdayCtrl = TextEditingController(text: widget.character.birthday);
-    
+
     widget.character.customFields.forEach((k, v) {
       _customKeysCtrls.add(TextEditingController(text: k));
       _customValuesCtrls.add(TextEditingController(text: v));
@@ -1471,10 +1807,17 @@ class _GlobalCharacterEditDialogState extends State<_GlobalCharacterEditDialog> 
   @override
   void dispose() {
     _editScrollController.dispose();
-    _nameCtrl.dispose(); _franchiseCtrl.dispose(); _genderCtrl.dispose();
-    _ageCtrl.dispose(); _birthdayCtrl.dispose();
-    for (var c in _customKeysCtrls) { c.dispose(); }
-    for (var c in _customValuesCtrls) { c.dispose(); }
+    _nameCtrl.dispose();
+    _franchiseCtrl.dispose();
+    _genderCtrl.dispose();
+    _ageCtrl.dispose();
+    _birthdayCtrl.dispose();
+    for (var c in _customKeysCtrls) {
+      c.dispose();
+    }
+    for (var c in _customValuesCtrls) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -1493,11 +1836,32 @@ class _GlobalCharacterEditDialogState extends State<_GlobalCharacterEditDialog> 
       gender: _genderCtrl.text.trim(),
       age: _ageCtrl.text.trim(),
       birthday: _birthdayCtrl.text.trim(),
-      avatarPath: widget.character.avatarPath, 
+      avatarPath: _avatarPath,
       customFields: customs,
     );
 
     Navigator.pop(context, updated);
+  }
+
+  void _openCropper(File imageFile) {
+    showDialog<Uint8List>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AvatarCropperDialog(imageFile: imageFile),
+    ).then((bytes) async {
+      if (bytes != null) {
+        final path = await widget.metadataService.saveAvatarImage(bytes);
+        setState(() => _avatarPath = path);
+      }
+    });
+  }
+
+  void _pickAvatar() async {
+    FilePickerResult? result =
+        await FilePicker.platform.pickFiles(type: FileType.image);
+    if (result != null && result.files.single.path != null) {
+      _openCropper(File(result.files.single.path!));
+    }
   }
 
   Widget _buildField(String label, TextEditingController ctrl) {
@@ -1508,7 +1872,11 @@ class _GlobalCharacterEditDialogState extends State<_GlobalCharacterEditDialog> 
         children: [
           Padding(
             padding: const EdgeInsets.only(bottom: 6.0, left: 2.0),
-            child: Text(label, style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w500)),
+            child: Text(label,
+                style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500)),
           ),
           TextField(
             controller: ctrl,
@@ -1516,8 +1884,11 @@ class _GlobalCharacterEditDialogState extends State<_GlobalCharacterEditDialog> 
             decoration: InputDecoration(
               filled: true,
               fillColor: Colors.black26,
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide.none),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             ),
           ),
         ],
@@ -1536,17 +1907,22 @@ class _GlobalCharacterEditDialogState extends State<_GlobalCharacterEditDialog> 
           filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
           child: Container(
             width: 440,
-            constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.85),
+            constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.85),
             padding: const EdgeInsets.all(24),
             decoration: BoxDecoration(
               color: const Color(0xFF2C2C2E).withOpacity(0.9),
               border: Border.all(color: Colors.white12, width: 0.5),
             ),
             child: Column(
-              mainAxisSize: MainAxisSize.min, 
+              mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text('Modificar Perfil', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                const Text('Modificar Perfil',
+                    style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white)),
                 const SizedBox(height: 20),
                 Flexible(
                   child: SingleChildScrollView(
@@ -1555,6 +1931,63 @@ class _GlobalCharacterEditDialogState extends State<_GlobalCharacterEditDialog> 
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
+                        Center(
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 24),
+                            child: Stack(
+                              children: [
+                                Container(
+                                  width: 80,
+                                  height: 80,
+                                  alignment: Alignment.center,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: Colors.black26,
+                                    border: Border.all(
+                                        color: Colors.white24, width: 2),
+                                    image: _avatarPath != null &&
+                                            File(_avatarPath!).existsSync()
+                                        ? DecorationImage(
+                                            image:
+                                                FileImage(File(_avatarPath!)),
+                                            fit: BoxFit.cover)
+                                        : null,
+                                  ),
+                                  child: _avatarPath == null
+                                      ? const Icon(Icons.add_a_photo_outlined,
+                                          color: Colors.white38, size: 30)
+                                      : null,
+                                ),
+                                Positioned.fill(
+                                  child: Material(
+                                    color: Colors.transparent,
+                                    child: InkWell(
+                                      borderRadius: BorderRadius.circular(40),
+                                      onTap: _pickAvatar,
+                                    ),
+                                  ),
+                                ),
+                                if (_avatarPath != null)
+                                  Positioned(
+                                    bottom: 0,
+                                    right: 0,
+                                    child: GestureDetector(
+                                      onTap: () =>
+                                          setState(() => _avatarPath = null),
+                                      child: Container(
+                                        padding: const EdgeInsets.all(4),
+                                        decoration: const BoxDecoration(
+                                            color: Colors.redAccent,
+                                            shape: BoxShape.circle),
+                                        child: const Icon(Icons.close,
+                                            size: 12, color: Colors.white),
+                                      ),
+                                    ),
+                                  )
+                              ],
+                            ),
+                          ),
+                        ),
                         _buildField('Nombre *', _nameCtrl),
                         _buildField('Franquicia *', _franchiseCtrl),
                         Row(
@@ -1565,67 +1998,158 @@ class _GlobalCharacterEditDialogState extends State<_GlobalCharacterEditDialog> 
                           ],
                         ),
                         _buildField('Cumpleaños', _birthdayCtrl),
-                        
                         const Padding(
                           padding: EdgeInsets.symmetric(vertical: 8.0),
                           child: Divider(color: Colors.white12, height: 1),
                         ),
-                        
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            const Text('Campos Extra', style: TextStyle(fontSize: 13, color: Colors.white54, fontWeight: FontWeight.bold)),
+                            const Text('Campos Extra',
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    color: Colors.white54,
+                                    fontWeight: FontWeight.bold)),
                             TextButton.icon(
-                              onPressed: () {
-                                setState(() { 
-                                  _customKeysCtrls.add(TextEditingController()); 
-                                  _customValuesCtrls.add(TextEditingController()); 
-                                });
-                                _scrollToBottomEdit();
-                              }, 
-                              icon: const Icon(Icons.add, size: 14), 
-                              label: const Text('Añadir', style: TextStyle(fontSize: 12))
-                            )
+                                onPressed: () {
+                                  setState(() {
+                                    _customKeysCtrls
+                                        .add(TextEditingController());
+                                    _customValuesCtrls
+                                        .add(TextEditingController());
+                                  });
+                                  _scrollToBottomEdit();
+                                },
+                                icon: const Icon(Icons.add, size: 14),
+                                label: const Text('Añadir',
+                                    style: TextStyle(fontSize: 12)))
                           ],
                         ),
                         const SizedBox(height: 4),
-                        
-                        ...List.generate(_customKeysCtrls.length, (idx) => Padding(
-                          padding: const EdgeInsets.only(bottom: 8.0),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Expanded(child: _buildField('Propiedad', _customKeysCtrls[idx])),
-                              const SizedBox(width: 8),
-                              Expanded(child: _buildField('Valor', _customValuesCtrls[idx])),
-                              Padding(
-                                padding: const EdgeInsets.only(top: 24.0, left: 4.0), 
-                                child: IconButton(
-                                  icon: const Icon(Icons.remove_circle, color: Colors.redAccent, size: 20), 
-                                  tooltip: 'Eliminar campo',
-                                  onPressed: () => setState(() { 
-                                    _customKeysCtrls.removeAt(idx).dispose(); 
-                                    _customValuesCtrls.removeAt(idx).dispose(); 
-                                  })
-                                ),
-                              )
-                            ],
-                          ),
-                        )),
+                        ReorderableListView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          buildDefaultDragHandles: false,
+                          itemCount: _customKeysCtrls.length,
+
+                          // 1. Mejora de Animación (Transición suave al soltar, 100% plana)
+                          proxyDecorator: (child, index, animation) {
+                            return AnimatedBuilder(
+                              animation: animation,
+                              builder: (context, child) {
+                                // Curva de desaceleración suave para el momento de soltar
+                                final double animValue = Curves.easeOutCubic
+                                    .transform(animation.value);
+                                return Transform.scale(
+                                  scale: 1.0 +
+                                      (animValue *
+                                          0.02), // Ligero aumento (2%) que se desvanece al soltar
+                                  child: Opacity(
+                                    opacity: 1.0 -
+                                        (animValue *
+                                            0.15), // Un 85% de opacidad al mover, 100% al soltar
+                                    child: Material(
+                                      color: Colors
+                                          .transparent, // Mantiene la orden de cero sombras/luces
+                                      elevation: 0,
+                                      child: child,
+                                    ),
+                                  ),
+                                );
+                              },
+                              child: child,
+                            );
+                          },
+
+                          // 2. A prueba de errores (Evita la recarga inútil si no hay movimiento)
+                          onReorder: (oldIndex, newIndex) {
+                            if (oldIndex == newIndex)
+                              return; // Freno de seguridad inicial
+
+                            setState(() {
+                              if (newIndex > oldIndex) newIndex -= 1;
+
+                              if (oldIndex == newIndex)
+                                return; // Freno de seguridad final tras el reajuste
+
+                              final keyCtrl =
+                                  _customKeysCtrls.removeAt(oldIndex);
+                              final valCtrl =
+                                  _customValuesCtrls.removeAt(oldIndex);
+                              _customKeysCtrls.insert(newIndex, keyCtrl);
+                              _customValuesCtrls.insert(newIndex, valCtrl);
+                            });
+                          },
+                          itemBuilder: (context, idx) {
+                            final keyCtrl = _customKeysCtrls[idx];
+                            final valCtrl = _customValuesCtrls[idx];
+
+                            return Container(
+                              key: ObjectKey(keyCtrl),
+                              color: Colors
+                                  .transparent, // <-- FIJA LA CAJA DE COLISIÓN
+                              padding: const EdgeInsets.symmetric(
+                                  vertical: 4.0), // <-- ADIÓS ASIMETRÍA
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  ReorderableDragStartListener(
+                                    index: idx,
+                                    child: const MouseRegion(
+                                      cursor: SystemMouseCursors.move,
+                                      child: Padding(
+                                        padding: EdgeInsets.only(
+                                            top: 28.0,
+                                            right:
+                                                8.0), // Mantenemos para alinear visualmente
+                                        child: Icon(Icons.drag_indicator,
+                                            color: Colors.white38, size: 20),
+                                      ),
+                                    ),
+                                  ),
+                                  Expanded(
+                                      child: _buildField('Propiedad', keyCtrl)),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                      child: _buildField('Valor', valCtrl)),
+                                  Padding(
+                                    padding: const EdgeInsets.only(
+                                        top: 24.0, left: 4.0),
+                                    child: IconButton(
+                                      icon: const Icon(Icons.remove_circle,
+                                          color: Colors.redAccent, size: 20),
+                                      tooltip: 'Eliminar campo',
+                                      onPressed: () {
+                                        setState(() {
+                                          _customKeysCtrls.remove(keyCtrl);
+                                          _customValuesCtrls.remove(valCtrl);
+                                          keyCtrl.dispose();
+                                          valCtrl.dispose();
+                                        });
+                                      },
+                                    ),
+                                  )
+                                ],
+                              ),
+                            );
+                          },
+                        ),
                         if (_customKeysCtrls.isNotEmpty)
                           Align(
                             alignment: Alignment.centerRight,
                             child: TextButton.icon(
-                              onPressed: () {
-                                setState(() { 
-                                  _customKeysCtrls.add(TextEditingController()); 
-                                  _customValuesCtrls.add(TextEditingController()); 
-                                });
-                                _scrollToBottomEdit();
-                              }, 
-                              icon: const Icon(Icons.add, size: 12), 
-                              label: const Text('Añadir otro campo', style: TextStyle(fontSize: 11))
-                            ),
+                                onPressed: () {
+                                  setState(() {
+                                    _customKeysCtrls
+                                        .add(TextEditingController());
+                                    _customValuesCtrls
+                                        .add(TextEditingController());
+                                  });
+                                  _scrollToBottomEdit();
+                                },
+                                icon: const Icon(Icons.add, size: 12),
+                                label: const Text('Añadir otro campo',
+                                    style: TextStyle(fontSize: 11))),
                           ),
                       ],
                     ),
@@ -1635,14 +2159,18 @@ class _GlobalCharacterEditDialogState extends State<_GlobalCharacterEditDialog> 
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
-                    TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar', style: TextStyle(color: Colors.white70))),
+                    TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Cancelar',
+                            style: TextStyle(color: Colors.white70))),
                     const SizedBox(width: 12),
                     ElevatedButton(
                       onPressed: _save,
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF0A84FF), 
+                        backgroundColor: const Color(0xFF0A84FF),
                         foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8)),
                       ),
                       child: const Text('Guardar'),
                     ),
@@ -1669,10 +2197,10 @@ String _cipherExtension(String ext) {
       result += '0';
     } else if (RegExp(r'[a-z]').hasMatch(char)) {
       int charCode = char.codeUnitAt(0);
-      int nextCode = charCode == 122 ? 97 : charCode + 1; 
+      int nextCode = charCode == 122 ? 97 : charCode + 1;
       result += String.fromCharCode(nextCode);
     } else {
-      result += char; 
+      result += char;
     }
   }
   return result;
@@ -1686,10 +2214,10 @@ String _decipherExtension(String ciphered) {
       result += '.';
     } else if (RegExp(r'[a-z]').hasMatch(char)) {
       int charCode = char.codeUnitAt(0);
-      int prevCode = charCode == 97 ? 122 : charCode - 1; 
+      int prevCode = charCode == 97 ? 122 : charCode - 1;
       result += String.fromCharCode(prevCode);
     } else {
-      result += char; 
+      result += char;
     }
   }
   return result;
@@ -1697,20 +2225,20 @@ String _decipherExtension(String ciphered) {
 
 String _obfuscateName(String originalName) {
   if (originalName.toLowerCase().endsWith('.vtx')) return originalName;
-  final ext = p.extension(originalName); 
-  final base = p.basenameWithoutExtension(originalName); 
-  final cipheredExt = _cipherExtension(ext); 
+  final ext = p.extension(originalName);
+  final base = p.basenameWithoutExtension(originalName);
+  final cipheredExt = _cipherExtension(ext);
   return '$base$cipheredExt.vtx';
 }
 
 String _getDeobfuscatedName(String filename) {
   if (filename.toLowerCase().endsWith('.vtx')) {
-    final base = p.basenameWithoutExtension(filename); 
-    final lastZero = base.lastIndexOf('0'); 
+    final base = p.basenameWithoutExtension(filename);
+    final lastZero = base.lastIndexOf('0');
 
     if (lastZero != -1) {
-      final realBase = base.substring(0, lastZero); 
-      final realExt = _decipherExtension(base.substring(lastZero)); 
+      final realBase = base.substring(0, lastZero);
+      final realExt = _decipherExtension(base.substring(lastZero));
       return '$realBase$realExt';
     }
     return base;
@@ -1765,19 +2293,19 @@ Future<void> _moveFileRobustly(File sourceFile, String newPath) async {
   while (retries > 0) {
     try {
       await sourceFile.rename(newPath);
-      return; 
+      return;
     } catch (e) {
       try {
         final newFile = await sourceFile.copy(newPath);
         if (await newFile.exists()) {
           final sourceSize = await sourceFile.length();
           final newSize = await newFile.length();
-          
+
           if (sourceSize == newSize) {
             await sourceFile.delete();
-            return; 
+            return;
           } else {
-            await newFile.delete(); 
+            await newFile.delete();
             throw Exception("La copia falló la prueba de integridad.");
           }
         }
@@ -1785,7 +2313,8 @@ Future<void> _moveFileRobustly(File sourceFile, String newPath) async {
         retries--;
         if (retries == 0) {
           if (await File(newPath).exists()) await File(newPath).delete();
-          throw Exception("El archivo está bloqueado o dañado: $copyDeleteError");
+          throw Exception(
+              "El archivo está bloqueado o dañado: $copyDeleteError");
         }
         await Future.delayed(const Duration(milliseconds: 250));
       }
