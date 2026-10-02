@@ -101,3 +101,65 @@ class _GlassNotificationManager {
 void showGlassSnackBar(BuildContext context, String message, {IconData icon = Icons.check_circle_outline, Color iconColor = const Color(0xFF0A84FF)}) {
   _GlassNotificationManager.show(context, message, icon, iconColor);
 }
+
+// ---------------------------------------------------------------------------
+// Búsqueda insensible a acentos (ej: "pokemon" encuentra "Pokémon")
+// ---------------------------------------------------------------------------
+
+/// Mapa de caracteres acentuados/especiales -> su equivalente "plano".
+/// Cubre los acentos y diéresis más comunes en español y otros idiomas
+/// latinos (á, é, í, ó, ú, ü, ñ, ç...) tanto en minúscula como en mayúscula.
+const Map<String, String> _diacriticsMap = {
+  'á': 'a', 'à': 'a', 'ä': 'a', 'â': 'a', 'ã': 'a', 'å': 'a', 'ā': 'a',
+  'Á': 'A', 'À': 'A', 'Ä': 'A', 'Â': 'A', 'Ã': 'A', 'Å': 'A', 'Ā': 'A',
+  'é': 'e', 'è': 'e', 'ë': 'e', 'ê': 'e', 'ē': 'e', 'ė': 'e', 'ę': 'e',
+  'É': 'E', 'È': 'E', 'Ë': 'E', 'Ê': 'E', 'Ē': 'E', 'Ė': 'E', 'Ę': 'E',
+  'í': 'i', 'ì': 'i', 'ï': 'i', 'î': 'i', 'ī': 'i', 'į': 'i',
+  'Í': 'I', 'Ì': 'I', 'Ï': 'I', 'Î': 'I', 'Ī': 'I', 'Į': 'I',
+  'ó': 'o', 'ò': 'o', 'ö': 'o', 'ô': 'o', 'õ': 'o', 'ø': 'o', 'ō': 'o',
+  'Ó': 'O', 'Ò': 'O', 'Ö': 'O', 'Ô': 'O', 'Õ': 'O', 'Ø': 'O', 'Ō': 'O',
+  'ú': 'u', 'ù': 'u', 'ü': 'u', 'û': 'u', 'ū': 'u', 'ů': 'u',
+  'Ú': 'U', 'Ù': 'U', 'Ü': 'U', 'Û': 'U', 'Ū': 'U', 'Ů': 'U',
+  'ñ': 'n', 'ń': 'n', 'Ñ': 'N', 'Ń': 'N',
+  'ç': 'c', 'ć': 'c', 'č': 'c', 'Ç': 'C', 'Ć': 'C', 'Č': 'C',
+  'ý': 'y', 'ÿ': 'y', 'Ý': 'Y', 'Ÿ': 'Y',
+  'š': 's', 'ś': 's', 'ş': 's', 'Š': 'S', 'Ś': 'S', 'Ş': 'S',
+  'ž': 'z', 'ź': 'z', 'ż': 'z', 'Ž': 'Z', 'Ź': 'Z', 'Ż': 'Z',
+  'æ': 'ae', 'Æ': 'AE', 'œ': 'oe', 'Œ': 'OE',
+};
+
+/// Quita los acentos/diacríticos de [input], dejando el resto del texto
+/// intacto (mayúsculas, espacios, números, etc.).
+String removeDiacritics(String input) {
+  // Vía rápida: si el texto es solo ASCII (caso de casi todas las etiquetas
+  // en inglés) no hay nada que quitar y se devuelve tal cual, sin copiarlo.
+  var isAscii = true;
+  for (var i = 0; i < input.length; i++) {
+    if (input.codeUnitAt(i) > 0x7F) {
+      isAscii = false;
+      break;
+    }
+  }
+  if (isAscii) return input;
+
+  final buffer = StringBuffer();
+  for (final int rune in input.runes) {
+    final String? plain = _diacriticsByRune[rune];
+    if (plain != null) {
+      buffer.write(plain);
+    } else {
+      buffer.writeCharCode(rune);
+    }
+  }
+  return buffer.toString();
+}
+
+/// Mismo mapa pero indexado por código (evita crear un String por letra).
+final Map<int, String> _diacriticsByRune = {
+  for (final e in _diacriticsMap.entries) e.key.runes.first: e.value,
+};
+
+/// Normaliza un texto para comparaciones de búsqueda: minúsculas y sin
+/// acentos. Úsalo tanto en la consulta del usuario como en los campos que
+/// vas a comparar, así "pokemon" encuentra "Pokémon", "Pokemon", "POKÉMON", etc.
+String normalizeForSearch(String input) => removeDiacritics(input.toLowerCase());

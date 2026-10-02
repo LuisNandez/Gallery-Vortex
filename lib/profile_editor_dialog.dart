@@ -11,6 +11,8 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'metadata_service.dart';
 import 'ui_utils.dart';
+import 'gemini_api_key.dart';
+import 'reorderable_fields_list.dart';
 import 'dart:math' as math;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -355,15 +357,16 @@ class _ProfileEditorDialogState extends State<ProfileEditorDialog>
 
   // ---> NUEVO: Función que filtra en tiempo real
   void _filterLocalCharacters() {
-    final query = _localSearchCtrl.text.trim().toLowerCase();
+    // normalizeForSearch: minúsculas + sin acentos ("pokemon" encuentra "Pokémon")
+    final query = normalizeForSearch(_localSearchCtrl.text.trim());
     List<LocalCharacter> tempList;
 
     if (query.isEmpty) {
       tempList = List.from(_localCharacters);
     } else {
       tempList = _localCharacters.where((c) {
-        return c.name.toLowerCase().contains(query) ||
-            c.franchise.toLowerCase().contains(query);
+        return normalizeForSearch(c.name).contains(query) ||
+            normalizeForSearch(c.franchise).contains(query);
       }).toList();
     }
 
@@ -511,74 +514,6 @@ class _ProfileEditorDialogState extends State<ProfileEditorDialog>
     _loadCurrentProfiles();
   }
 
-  Future<String?> _askForApiKey() async {
-    final TextEditingController keyCtrl = TextEditingController();
-    return showDialog<String>(
-      context: context,
-      barrierColor: Colors.black45,
-      builder: (context) => Dialog(
-        backgroundColor: Colors.transparent,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(14),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-            child: Container(
-              width: 380,
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: const Color(0xFF2C2C2E).withOpacity(0.85),
-                border: Border.all(color: Colors.white12, width: 0.5),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.vpn_key_outlined, color: Color(0xFF0A84FF), size: 40),
-                  const SizedBox(height: 16),
-                  const Text('Clave de API Requerida',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
-                  const SizedBox(height: 8),
-                  const Text(
-                      'Para usar la Inteligencia Artificial, necesitas ingresar tu propia API Key de Google Gemini.',
-                      style: TextStyle(fontSize: 12, color: Colors.white70),
-                      textAlign: TextAlign.center),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: keyCtrl,
-                    obscureText: true, // Oculta los caracteres por seguridad
-                    style: const TextStyle(color: Colors.white, fontSize: 13),
-                    decoration: InputDecoration(
-                      filled: true,
-                      fillColor: Colors.black26,
-                      hintText: 'Pega tu clave (AIzaSy...) aquí',
-                      hintStyle: const TextStyle(color: Colors.white24),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(context, null),
-                        child: const Text('Cancelar', style: TextStyle(color: Colors.white70)),
-                      ),
-                      ElevatedButton(
-                        onPressed: () => Navigator.pop(context, keyCtrl.text.trim()),
-                        style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF0A84FF), foregroundColor: Colors.white),
-                        child: const Text('Guardar'),
-                      ),
-                    ],
-                  )
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
   Future<void> _autoFillWithIA() async {
     final name = _nameCtrl.text.trim();
     final franchise = _franchiseCtrl.text.trim();
@@ -589,22 +524,18 @@ class _ProfileEditorDialogState extends State<ProfileEditorDialog>
       return;
     }
 
-    final prefs = await SharedPreferences.getInstance();
-    String? apiKey = prefs.getString('gemini_api_key');
-
-    // Si no existe o está vacía, mostramos el cuadro de diálogo
-    if (apiKey == null || apiKey.trim().isEmpty) {
-      apiKey = await _askForApiKey();
-      
-      // Si el usuario canceló o no escribió nada
-      if (apiKey == null || apiKey.trim().isEmpty) {
-        showGlassSnackBar(context, 'Operación cancelada. Se requiere una clave.',
-            icon: Icons.cancel_outlined, iconColor: Colors.amber);
+    // Si no hay clave guardada, abrimos el asistente paso a paso.
+    // El asistente valida la clave contra Google y la guarda por sí mismo.
+    String? apiKey = await GeminiApiKeyService.load();
+    if (apiKey == null) {
+      apiKey = await showGeminiApiKeyDialog(context);
+      if (apiKey == null || !mounted) {
+        if (mounted) {
+          showGlassSnackBar(context, 'Operación cancelada. Se requiere una clave.',
+              icon: Icons.cancel_outlined, iconColor: Colors.amber);
+        }
         return;
       }
-      
-      // Guardamos la clave para el futuro
-      await prefs.setString('gemini_api_key', apiKey.trim());
     }
 
     showDialog(
@@ -615,12 +546,15 @@ class _ProfileEditorDialogState extends State<ProfileEditorDialog>
     );
 
     try {
-      // 1. Reemplaza esto con tu API Key de Google AI Studio
+      // La clave viaja en la cabecera (no en la URL) para que no quede en registros.
       final url = Uri.parse(
-          'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=$apiKey');
+          'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent');
 
       final response = await http.post(url,
-          headers: {'Content-Type': 'application/json'},
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey,
+          },
           body: jsonEncode({
             "systemInstruction": {
               "parts": [
@@ -712,15 +646,20 @@ REGLAS ESTRICTAS:
             context, 'Búsqueda web completada y campos rellenados.',
             icon: Icons.travel_explore, iconColor: const Color(0xFF0A84FF));
       } else {
-        String errorMsg = 'Error ${response.statusCode}';
-        try {
-          final errorData = jsonDecode(response.body);
-          if (errorData['error'] != null &&
-              errorData['error']['message'] != null) {
-            errorMsg = errorData['error']['message'];
-          }
-        } catch (_) {}
-        showGlassSnackBar(context, 'Gemini dice: $errorMsg',
+        final check = GeminiApiKeyService.interpretError(
+            response.statusCode, utf8.decode(response.bodyBytes));
+
+        // Clave rechazada: la borramos y reabrimos el asistente para poner otra.
+        if (check.status == GeminiKeyStatus.invalid) {
+          await GeminiApiKeyService.clear();
+          if (!mounted) return;
+          final newKey = await showGeminiApiKeyDialog(context,
+              notice: 'Google rechazó la clave guardada. Ingresa una nueva para continuar.');
+          if (newKey != null && mounted) _autoFillWithIA();
+          return;
+        }
+
+        showGlassSnackBar(context, check.message,
             icon: Icons.error_outline, iconColor: Colors.redAccent);
       }
     } catch (e) {
@@ -1400,13 +1339,15 @@ REGLAS ESTRICTAS:
         textEditingController: ctrl,
         focusNode: focusNode,
         optionsBuilder: (TextEditingValue textEditingValue) {
-          final pattern = textEditingValue.text.trim().toLowerCase();
+          // normalizeForSearch: minúsculas + sin acentos, para que
+          // "pokemon" encuentre sugerencias guardadas como "Pokémon".
+          final pattern = normalizeForSearch(textEditingValue.text.trim());
           if (pattern.isEmpty) {
             // Si quieres que muestre todo al hacer clic sin escribir, cambia esto por: return suggestions;
             return const Iterable<String>.empty();
           }
           return suggestions
-              .where((option) => option.toLowerCase().contains(pattern));
+              .where((option) => normalizeForSearch(option).contains(pattern));
         },
         fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
           return TextField(
@@ -1669,6 +1610,109 @@ REGLAS ESTRICTAS:
     });
   }
 
+  /// Amplía el avatar del personaje partiendo de la miniatura pulsada:
+  /// la imagen "crece" desde su posición real hasta el centro de la pantalla.
+  Future<void> _showAvatarPreview(
+      LocalCharacter char, BuildContext anchorContext) async {
+    final String? path = char.avatarPath;
+    if (path == null || !File(path).existsSync()) return;
+
+    final RenderObject? render = anchorContext.findRenderObject();
+    if (render is! RenderBox || !render.hasSize) return;
+
+    final Rect startRect = render.localToGlobal(Offset.zero) & render.size;
+    final Size screen = MediaQuery.of(context).size;
+    final double side = [screen.width * 0.6, screen.height * 0.45, 300.0]
+        .reduce((a, b) => a < b ? a : b);
+    final Rect endRect = Rect.fromCenter(
+      center: Offset(screen.width / 2, screen.height / 2 - 20),
+      width: side,
+      height: side,
+    );
+
+    await showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Cerrar vista previa',
+      barrierColor: Colors.transparent,
+      transitionDuration: const Duration(milliseconds: 320),
+      pageBuilder: (_, __, ___) => const SizedBox.shrink(),
+      transitionBuilder: (ctx, animation, _, __) {
+        final Animation<double> curved = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOutCubic,
+          reverseCurve: Curves.easeInCubic,
+        );
+        return AnimatedBuilder(
+          animation: curved,
+          builder: (context, _) {
+            final double t = curved.value;
+            final Rect rect = Rect.lerp(startRect, endRect, t)!;
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => Navigator.of(ctx).pop(),
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(
+                          sigmaX: 0.1 + 12 * t, sigmaY: 0.1 + 12 * t),
+                      child:
+                          Container(color: Colors.black.withOpacity(0.55 * t)),
+                    ),
+                  ),
+                  Positioned.fromRect(
+                    rect: rect,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white24, width: 1),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.5 * t),
+                            blurRadius: 40 * t,
+                            offset: Offset(0, 14 * t),
+                          ),
+                        ],
+                        image: DecorationImage(
+                            image: FileImage(File(path)), fit: BoxFit.cover),
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    left: 24,
+                    right: 24,
+                    top: endRect.bottom + 24,
+                    child: Opacity(
+                      opacity: t,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(char.name,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w600)),
+                          const SizedBox(height: 4),
+                          Text(char.franchise,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                  color: Colors.white54, fontSize: 13)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+
   @override
   Widget build(BuildContext context) {
     // Si aún no se ha decidido el modo inicial y ya hay personajes, mostramos la biografía.
@@ -1683,7 +1727,7 @@ REGLAS ESTRICTAS:
         child: BackdropFilter(
           filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
           child: Container(
-            width: 460,
+            width: 520,
             height: MediaQuery.of(context).size.height * 0.8,
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
@@ -1694,55 +1738,52 @@ REGLAS ESTRICTAS:
               children: [
                 // --- CABECERA DINÁMICA CON BOTÓN DE VISTA ---
                 Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Row(
-                      children: [
-                        Icon(
-                            !_showBiographyMode
-                                ? Icons.people_outline_rounded
-                                : Icons.auto_stories_outlined,
-                            color: Colors.white70),
-                        const SizedBox(width: 8),
-                        Text(
-                          !_showBiographyMode
-                              ? (widget.imageIds.length == 1
-                                  ? 'Gestionar Perfiles'
-                                  : 'Perfiles (${widget.imageIds.length} archivos)')
-                              : 'Biografía',
-                          style: const TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white),
-                        ),
-                      ],
-                    ),
-                    if (hasProfiles)
-                      IconButton(
-                        // ELIMINA LAS DOS LÍNEAS DE ABAJO:
-                        // alignment: Alignment.centerRight,
-                        // padding: EdgeInsets.zero,
-
-                        icon: Icon(
-                          !_showBiographyMode
-                              ? Icons.auto_stories_outlined
-                              : Icons.edit_note_rounded,
-                          color: const Color(0xFF0A84FF),
-                          size:
-                              24, // Te sugiero 24 para que tenga el tamaño estándar de Material
-                        ),
-                        tooltip: !_showBiographyMode
-                            ? 'Ver Biografías'
-                            : 'Modificar Perfiles',
-                        onPressed: () {
-                          setState(() {
-                            _showBiographyMode = !_showBiographyMode;
-                          });
-                        },
+                    Container(
+                      width: 36,
+                      height: 36,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0A84FF).withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(10),
                       ),
+                      child: Icon(
+                          !_showBiographyMode
+                              ? Icons.people_outline_rounded
+                              : Icons.auto_stories_outlined,
+                          color: const Color(0xFF0A84FF),
+                          size: 19),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            !_showBiographyMode
+                                ? (widget.imageIds.length == 1
+                                    ? 'Gestionar Perfiles'
+                                    : 'Perfiles (${widget.imageIds.length} archivos)')
+                                : 'Biografía',
+                            style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            _selectedCharacters.isEmpty
+                                ? 'Ningún personaje vinculado'
+                                : '${_selectedCharacters.length} personaje(s) vinculado(s)',
+                            style: const TextStyle(fontSize: 11, color: Colors.white38),
+                          ),
+                        ],
+                      ),
+                    ),
                   ],
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 20),
 
                 // --- CONTENIDO INTERMUTABLE ---
                 Expanded(
@@ -1751,7 +1792,7 @@ REGLAS ESTRICTAS:
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
                             // Carrusel horizontal de seleccionados (Solo aparece si hay elementos)
-                            if (_selectedCharacters.isNotEmpty) ...[
+                            /*if (_selectedCharacters.isNotEmpty) ...[
                               SizedBox(
                                 height: 38,
                                 // --- MAGIA PARA PC: Permite arrastrar con el clic izquierdo del mouse ---
@@ -1807,19 +1848,24 @@ REGLAS ESTRICTAS:
                                 ),
                               ),
                               const SizedBox(height: 12),
-                            ],
+                            ],*/
                             TabBar(
                               controller: _tabController,
                               indicatorColor: const Color(0xFF0A84FF),
+                              indicatorSize: TabBarIndicatorSize.tab,
                               labelColor: const Color(0xFF0A84FF),
                               unselectedLabelColor: Colors.white38,
+                              dividerColor: Colors.transparent,
+                              labelStyle:
+                                  const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                              unselectedLabelStyle: const TextStyle(fontSize: 13),
                               tabs: const [
                                 Tab(text: 'Librería Central'),
                                 Tab(text: 'Manual'),
                                 Tab(text: 'Internet (API)')
                               ],
                             ),
-                            const SizedBox(height: 12),
+                            const SizedBox(height: 18),
                             Expanded(
                               child: TabBarView(
                                 controller: _tabController,
@@ -1828,44 +1874,34 @@ REGLAS ESTRICTAS:
                                   Column(
                                     children: [
                                       Padding(
-                                        padding:
-                                            const EdgeInsets.only(bottom: 12.0),
+                                        padding: const EdgeInsets.only(bottom: 16.0),
                                         child: TextField(
+                                          autofocus: true,
                                           controller: _localSearchCtrl,
-                                          style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 13),
+                                          style: const TextStyle(color: Colors.white, fontSize: 13),
                                           decoration: InputDecoration(
                                             filled: true,
                                             fillColor: const Color(0xFF1C1C1E),
                                             prefixIcon: const Icon(Icons.search,
-                                                color: Colors.white54,
-                                                size: 18),
-                                            suffixIcon: _localSearchCtrl
-                                                    .text.isNotEmpty
+                                                color: Colors.white54, size: 18),
+                                            suffixIcon: _localSearchCtrl.text.isNotEmpty
                                                 ? IconButton(
-                                                    icon: const Icon(
-                                                        Icons.cancel,
-                                                        color: Colors.white54,
-                                                        size: 16),
+                                                    icon: const Icon(Icons.cancel,
+                                                        color: Colors.white54, size: 16),
                                                     onPressed: () {
                                                       _localSearchCtrl.clear();
-                                                      FocusScope.of(context)
-                                                          .unfocus();
+                                                      FocusScope.of(context).unfocus();
                                                     },
                                                   )
                                                 : null,
-                                            contentPadding:
-                                                const EdgeInsets.symmetric(
-                                                    vertical: 0),
+                                            contentPadding: const EdgeInsets.symmetric(
+                                                vertical: 14, horizontal: 8),
                                             border: OutlineInputBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(8),
+                                                borderRadius: BorderRadius.circular(10),
                                                 borderSide: BorderSide.none),
-                                            hintText:
-                                                'Buscar personaje o franquicia...',
-                                            hintStyle: const TextStyle(
-                                                color: Colors.white54),
+                                            hintText: 'Buscar personaje o franquicia...',
+                                            hintStyle:
+                                                const TextStyle(color: Colors.white38, fontSize: 13),
                                           ),
                                         ),
                                       ),
@@ -1886,16 +1922,11 @@ REGLAS ESTRICTAS:
                                                             color: Colors
                                                                 .white54)))
                                                 : ListView.separated(
-                                                    physics:
-                                                        const BouncingScrollPhysics(),
-                                                    itemCount:
-                                                        _filteredLocalCharacters
-                                                            .length,
-                                                    separatorBuilder: (_, __) =>
-                                                        const Divider(
-                                                            height: 1,
-                                                            color:
-                                                                Colors.white12),
+                                                    physics: const BouncingScrollPhysics(),
+                                                    padding: const EdgeInsets.only(right: 4, bottom: 8),
+                                                    itemCount: _filteredLocalCharacters.length,
+                                                    separatorBuilder: (_, __) => const Divider(
+                                                        height: 14, thickness: 0.5, color: Colors.white10),
                                                     itemBuilder:
                                                         (context, idx) {
                                                       final char =
@@ -1908,83 +1939,70 @@ REGLAS ESTRICTAS:
                                                                   char.id);
                                                       return ListTile(
                                                         contentPadding:
-                                                            EdgeInsets.zero,
-                                                        leading: Container(
-                                                          width: 36,
-                                                          height: 36,
-                                                          decoration:
-                                                              BoxDecoration(
-                                                            shape:
-                                                                BoxShape.circle,
-                                                            color:
-                                                                Colors.black26,
-                                                            border: Border.all(
-                                                                color: Colors
-                                                                    .white24,
-                                                                width: 1),
-                                                            image: char.avatarPath !=
-                                                                        null &&
-                                                                    File(char
-                                                                            .avatarPath!)
-                                                                        .existsSync()
-                                                                ? DecorationImage(
-                                                                    image: FileImage(
-                                                                        File(char
-                                                                            .avatarPath!)),
-                                                                    fit: BoxFit
-                                                                        .cover)
-                                                                : null,
+                                                            const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                                                        minVerticalPadding: 10,
+                                                        horizontalTitleGap: 14,
+                                                        leading: Builder(
+                                                          builder: (anchorContext) => MouseRegion(
+                                                            cursor: SystemMouseCursors.click,
+                                                            child: GestureDetector(
+                                                              onTap: () => _showAvatarPreview(char, anchorContext),
+                                                              child: Container(
+                                                                width: 46,
+                                                                height: 46,
+                                                                decoration: BoxDecoration(
+                                                                  shape: BoxShape.circle,
+                                                                  color: Colors.black26,
+                                                                  border:
+                                                                      Border.all(color: Colors.white24, width: 1),
+                                                                  image: char.avatarPath != null &&
+                                                                          File(char.avatarPath!).existsSync()
+                                                                      ? DecorationImage(
+                                                                          image: FileImage(File(char.avatarPath!)),
+                                                                          fit: BoxFit.cover)
+                                                                      : null,
+                                                                ),
+                                                                child: char.avatarPath == null ||
+                                                                        !File(char.avatarPath!).existsSync()
+                                                                    ? const Icon(Icons.person,
+                                                                        color: Colors.white38, size: 24)
+                                                                    : null,
+                                                              ),
+                                                            ),
                                                           ),
-                                                          child: char.avatarPath ==
-                                                                      null ||
-                                                                  !File(char
-                                                                          .avatarPath!)
-                                                                      .existsSync()
-                                                              ? const Icon(
-                                                                  Icons.person,
-                                                                  color: Colors
-                                                                      .white38,
-                                                                  size: 20)
-                                                              : null,
                                                         ),
                                                         title: Text(char.name,
-                                                            style:
-                                                                const TextStyle(
-                                                                    color: Colors
-                                                                        .white,
-                                                                    fontSize:
-                                                                        13)),
-                                                        subtitle: Text(
-                                                            char.franchise,
-                                                            style:
-                                                                const TextStyle(
-                                                                    color: Colors
-                                                                        .white54,
-                                                                    fontSize:
-                                                                        11)),
+                                                            style: const TextStyle(
+                                                                color: Colors.white,
+                                                                fontSize: 14,
+                                                                fontWeight: FontWeight.w500)),
+                                                        subtitle: Padding(
+                                                          padding: const EdgeInsets.only(top: 3),
+                                                          child: Text(char.franchise,
+                                                              style: const TextStyle(
+                                                                  color: Colors.white54, fontSize: 12)),
+                                                        ),
                                                         trailing: Row(
-                                                          mainAxisSize:
-                                                              MainAxisSize.min,
+                                                          mainAxisSize: MainAxisSize.min,
                                                           children: [
                                                             IconButton(
-                                                                icon: const Icon(
-                                                                    Icons
-                                                                        .edit_note,
-                                                                    color: Colors
-                                                                        .white60,
-                                                                    size: 18),
-                                                                onPressed: () =>
-                                                                    _setupForm(
-                                                                        char)),
+                                                                icon: const Icon(Icons.edit_note,
+                                                                    color: Colors.white60, size: 20),
+                                                                splashRadius: 18,
+                                                                padding: EdgeInsets.zero,
+                                                                constraints: const BoxConstraints(
+                                                                    minWidth: 36, minHeight: 36),
+                                                                tooltip: 'Editar perfil',
+                                                                onPressed: () => _setupForm(char)),
+                                                            const SizedBox(width: 6),
                                                             IconButton(
-                                                              icon: const Icon(
-                                                                  Icons
-                                                                      .delete_outline,
-                                                                  color: Colors
-                                                                      .redAccent,
-                                                                  size: 18),
-                                                              tooltip:
-                                                                  'Eliminar perfil',
+                                                              icon: const Icon(Icons.delete_outline,
+                                                                  color: Colors.redAccent, size: 20),
+                                                              splashRadius: 18,
+                                                              padding: EdgeInsets.zero,
+                                                              constraints:
+                                                                  const BoxConstraints(minWidth: 36, minHeight: 36),
+                                                              tooltip: 'Eliminar perfil',
                                                               onPressed:
                                                                   () async {
                                                                 final bool
@@ -2068,14 +2086,18 @@ REGLAS ESTRICTAS:
                                                                 }
                                                               },
                                                             ),
+                                                            const SizedBox(width: 6),
                                                             Checkbox(
                                                                 value: isLinked,
-                                                                activeColor:
-                                                                    const Color(
-                                                                        0xFF0A84FF),
-                                                                onChanged: (_) =>
-                                                                    _toggleLinkCharacter(
-                                                                        char))
+                                                                activeColor: const Color(0xFF0A84FF),
+                                                                visualDensity: VisualDensity.compact,
+                                                                materialTapTargetSize:
+                                                                    MaterialTapTargetSize.shrinkWrap,
+                                                                shape: RoundedRectangleBorder(
+                                                                    borderRadius: BorderRadius.circular(4)),
+                                                                side: const BorderSide(
+                                                                    color: Colors.white38, width: 1.5),
+                                                                onChanged: (_) => _toggleLinkCharacter(char))
                                                           ],
                                                         ),
                                                       );
@@ -2299,128 +2321,31 @@ REGLAS ESTRICTAS:
                                                         fontSize: 11)))
                                           ],
                                         ),
-                                        ReorderableListView.builder(
-                                          shrinkWrap: true,
-                                          physics:
-                                              const NeverScrollableScrollPhysics(),
-                                          buildDefaultDragHandles: false,
-                                          itemCount: _customKeysCtrls.length,
-
-                                          // 1. Mejora de Animación (Transición suave al soltar, 100% plana)
-                                          proxyDecorator:
-                                              (child, index, animation) {
-                                            return AnimatedBuilder(
-                                              animation: animation,
-                                              builder: (context, child) {
-                                                // Curva de desaceleración suave para el momento de soltar
-                                                final double animValue = Curves
-                                                    .easeOutCubic
-                                                    .transform(animation.value);
-                                                return Transform.scale(
-                                                  scale: 1.0 +
-                                                      (animValue *
-                                                          0.02), // Ligero aumento (2%) que se desvanece al soltar
-                                                  child: Opacity(
-                                                    opacity: 1.0 -
-                                                        (animValue *
-                                                            0.15), // Un 85% de opacidad al mover, 100% al soltar
-                                                    child: Material(
-                                                      color: Colors
-                                                          .transparent, // Mantiene la orden de cero sombras/luces
-                                                      elevation: 0,
-                                                      child: child,
-                                                    ),
-                                                  ),
-                                                );
-                                              },
-                                              child: child,
-                                            );
-                                          },
-
-                                          // 2. A prueba de errores (Evita la recarga inútil si no hay movimiento)
+                                        ReorderableFieldsList(
+                                          keyControllers: _customKeysCtrls,
+                                          valueControllers: _customValuesCtrls,
+                                          parentScrollController: _manualScrollController,
+                                          fieldBuilder: _buildTextField,
+                                          crossAxisAlignment: CrossAxisAlignment.center,
+                                          controlsTopPadding: 0,
+                                          handleIconSize: 18,
+                                          deleteIconSize: 16,
+                                          fieldSpacing: 4,
                                           onReorder: (oldIndex, newIndex) {
-                                            if (oldIndex == newIndex)
-                                              return; // Freno de seguridad inicial
-
                                             setState(() {
-                                              if (newIndex > oldIndex)
-                                                newIndex -= 1;
-
-                                              if (oldIndex == newIndex)
-                                                return; // Freno de seguridad final tras el reajuste
-
-                                              final keyCtrl = _customKeysCtrls
-                                                  .removeAt(oldIndex);
-                                              final valCtrl = _customValuesCtrls
-                                                  .removeAt(oldIndex);
-                                              _customKeysCtrls.insert(
-                                                  newIndex, keyCtrl);
-                                              _customValuesCtrls.insert(
-                                                  newIndex, valCtrl);
+                                              final keyCtrl = _customKeysCtrls.removeAt(oldIndex);
+                                              final valCtrl = _customValuesCtrls.removeAt(oldIndex);
+                                              _customKeysCtrls.insert(newIndex, keyCtrl);
+                                              _customValuesCtrls.insert(newIndex, valCtrl);
                                             });
                                           },
-                                          itemBuilder: (context, idx) {
-                                            final keyCtrl =
-                                                _customKeysCtrls[idx];
-                                            final valCtrl =
-                                                _customValuesCtrls[idx];
-
-                                            // 1. Envolvemos en un Container con color transparente
-                                            return Container(
-                                              key: ObjectKey(keyCtrl),
-                                              color: Colors
-                                                  .transparent, // <-- ESTO ES CLAVE PARA LA HITBOX
-                                              padding: const EdgeInsets
-                                                  .symmetric(
-                                                  vertical:
-                                                      4.0), // <-- MARGEN SIMÉTRICO
-                                              child: Row(
-                                                children: [
-                                                  ReorderableDragStartListener(
-                                                    index: idx,
-                                                    child: const MouseRegion(
-                                                      cursor: SystemMouseCursors
-                                                          .move,
-                                                      child: Padding(
-                                                        padding:
-                                                            EdgeInsets.only(
-                                                                right: 8.0),
-                                                        child: Icon(
-                                                            Icons
-                                                                .drag_indicator,
-                                                            color:
-                                                                Colors.white38,
-                                                            size: 18),
-                                                      ),
-                                                    ),
-                                                  ),
-                                                  Expanded(
-                                                      child: _buildTextField(
-                                                          'Propiedad',
-                                                          keyCtrl)),
-                                                  const SizedBox(width: 4),
-                                                  Expanded(
-                                                      child: _buildTextField(
-                                                          'Valor', valCtrl)),
-                                                  IconButton(
-                                                    icon: const Icon(
-                                                        Icons.remove_circle,
-                                                        color: Colors.redAccent,
-                                                        size: 16),
-                                                    onPressed: () {
-                                                      setState(() {
-                                                        _customKeysCtrls
-                                                            .remove(keyCtrl);
-                                                        _customValuesCtrls
-                                                            .remove(valCtrl);
-                                                        keyCtrl.dispose();
-                                                        valCtrl.dispose();
-                                                      });
-                                                    },
-                                                  ),
-                                                ],
-                                              ),
-                                            );
+                                          onRemove: (index) {
+                                            setState(() {
+                                              final keyCtrl = _customKeysCtrls.removeAt(index);
+                                              final valCtrl = _customValuesCtrls.removeAt(index);
+                                              keyCtrl.dispose();
+                                              valCtrl.dispose();
+                                            });
                                           },
                                         ),
                                         if (_customKeysCtrls.isNotEmpty)
@@ -2559,16 +2484,24 @@ REGLAS ESTRICTAS:
                       : _buildBiographyView(), // Llama a tu función constructora de la biografía
                 ),
 
-                const SizedBox(height: 12),
-                // --- BOTÓN DE SALIDA DINÁMICO ---
+                const SizedBox(height: 18),
+                // --- BOTONES DE SALIDA ---
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
+                    if (_showBiographyMode)
+                      TextButton.icon(
+                        onPressed: () =>
+                            setState(() => _showBiographyMode = false),
+                        icon: const Icon(Icons.edit_note_rounded,
+                            size: 18, color: Colors.white70),
+                        label: const Text('Modificar perfiles',
+                            style: TextStyle(color: Colors.white70)),
+                      ),
+                    if (_showBiographyMode) const SizedBox(width: 8),
                     TextButton(
                         onPressed: () {
-                          // Si estamos en la pestaña Manual (índice 1) y no estamos viendo la biografía, ejecuta el guardado
-                          if (!_showBiographyMode &&
-                              _tabController.index == 1) {
+                          if (!_showBiographyMode && _tabController.index == 1) {
                             _saveForm();
                           } else if (!_showBiographyMode && hasProfiles) {
                             setState(() => _showBiographyMode = true);
@@ -2576,6 +2509,9 @@ REGLAS ESTRICTAS:
                             Navigator.pop(context);
                           }
                         },
+                        style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 18, vertical: 14)),
                         child: Text(
                             (!_showBiographyMode && _tabController.index == 1)
                                 ? 'Guardar'

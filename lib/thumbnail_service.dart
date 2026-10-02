@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle; // NUEVO: Para extraer el ejecutable
@@ -18,7 +20,23 @@ class ThumbnailService {
   File? _ffmpegExe;
   File? _ffprobeExe;
   bool _isInitialized = false;
+  Future<void>? _initFuture;
   bool _isProcessingBatch = false;
+
+  // --- CIERRE ORDENADO / PROCESOS EN CURSO ---
+  // Cierre de la app en marcha: no se empieza trabajo nuevo.
+  bool _isExiting = false;
+  // Cuántas generaciones (miniaturas, animaciones, conversiones AVIF) hay en
+  // curso. Es importante esperarlas al cerrar porque los videos se renombran
+  // temporalmente durante la generación y hay que devolverles su nombre.
+  int _activeOps = 0;
+  final Set<Process> _runningProcesses = {};
+
+  // Caché en disco de las copias JPEG de imágenes AVIF (Flutter no decodifica
+  // AVIF de forma nativa, así que se convierten una vez para poder verlas).
+  Directory? _viewDir;
+  final Map<String, Future<File>> _viewInFlight = {};
+  static const int _maxViewCacheBytes = 400 * 1024 * 1024;
 
   final ValueNotifier<bool> isGeneratingNotifier = ValueNotifier<bool>(false);
   final ValueNotifier<double> progressNotifier = ValueNotifier<double>(0.0);
@@ -50,7 +68,16 @@ class ThumbnailService {
   }
   // --- FIN LÓGICA CACHÉ LRU ---
 
-  Future<void> initialize() async {
+  /// Idempotente y seguro si varias partes lo llaman a la vez (antes cada
+  /// llamada simultánea repetía toda la inicialización).
+  Future<void> initialize() {
+    return _initFuture ??= _doInitialize().catchError((Object e) {
+      _initFuture = null; // permitir reintentar si falló
+      throw e;
+    });
+  }
+
+  Future<void> _doInitialize() async {
     if (_isInitialized) return;
     final supportDir = await getApplicationSupportDirectory();
     
@@ -58,6 +85,10 @@ class ThumbnailService {
     _thumbnailDir = Directory(p.join(supportDir.path, 'thumbnails'));
     if (!await _thumbnailDir!.exists()) {
       await _thumbnailDir!.create(recursive: true);
+    }
+    _viewDir = Directory(p.join(supportDir.path, 'view_cache'));
+    if (!await _viewDir!.exists()) {
+      await _viewDir!.create(recursive: true);
     }
 
     // 2. Extraer silenciosamente cwebp.exe de los assets a la computadora
@@ -101,9 +132,9 @@ if (!await _ffprobeExe!.exists()) {
 }
 
     _isInitialized = true;
+    // En segundo plano: la carpeta de miniaturas puede tener miles de archivos.
+    unawaited(_sweepTemporaryFiles());
   }
-
-  
 
   // CAMBIO: Ahora nombraremos las miniaturas como .webp en lugar de .vtx
   String _getThumbName(String originalPath) {
@@ -112,18 +143,20 @@ if (!await _ffprobeExe!.exists()) {
   }
 
   Future<void> bulkGenerate(List<FileSystemEntity> files) async {
-    if (_isProcessingBatch) return;
+    if (_isProcessingBatch || _isExiting) return;
     _isProcessingBatch = true;
 
     final List<FileSystemEntity> safeFilesCopy = List.from(files);
-    
-    // FASE 1: Miniaturas Estáticas (Rápido)
-    await _processStaticBatch(safeFilesCopy);
 
-    // FASE 2: Miniaturas Animadas (Lento - Segundo Plano)
-    await _processAnimatedBatch(safeFilesCopy);
+    try {
+      // FASE 1: Miniaturas Estáticas (Rápido)
+      await _processStaticBatch(safeFilesCopy);
 
-    _isProcessingBatch = false;
+      // FASE 2: Miniaturas Animadas (Lento - Segundo Plano)
+      if (!_isExiting) await _processAnimatedBatch(safeFilesCopy);
+    } finally {
+      _isProcessingBatch = false;
+    }
   }
 
   Future<void> _processStaticBatch(List<FileSystemEntity> files) async {
@@ -143,6 +176,7 @@ if (!await _ffprobeExe!.exists()) {
     final batchSize = (Platform.numberOfProcessors > 2) ? Platform.numberOfProcessors - 1 : 2;
 
     for (int i = 0; i < toProcess.length; i += batchSize) {
+      if (_isExiting) break;
       final end = (i + batchSize < toProcess.length) ? i + batchSize : toProcess.length;
       await Future.wait(toProcess.sublist(i, end).map((file) => getThumbnail(file)));
       processed += (end - i);
@@ -171,6 +205,7 @@ if (!await _ffprobeExe!.exists()) {
     const ffmpegBatchSize = 1; 
 
     for (int i = 0; i < videosToAnimate.length; i += ffmpegBatchSize) {
+      if (_isExiting) break;
       final end = (i + ffmpegBatchSize < videosToAnimate.length) ? i + ffmpegBatchSize : videosToAnimate.length;
       
       // Llamamos a tu función de FFmpeg que creamos antes
@@ -218,7 +253,7 @@ if (!await _ffprobeExe!.exists()) {
     // ¡Añadimos .gif, .bmp, .mkv y .webm a la lista VIP!
     return [
       // Imágenes
-      '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', 
+      '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.avif',
       // Videos
       '.mp4', '.mov', '.avi', '.mkv', '.webm'
     ].contains(ext);
@@ -258,6 +293,18 @@ if (!await _ffprobeExe!.exists()) {
     }
 
     // 3. Si no existe, lo generamos
+    // Cerrando la app: no empezamos trabajo nuevo (devolvemos el original, sin cachear).
+    if (_isExiting) return originalImage;
+    _activeOps++;
+    try {
+      return await _generateThumbnail(originalImage, thumbFile, thumbPath);
+    } finally {
+      _activeOps--;
+    }
+  }
+
+  Future<File> _generateThumbnail(File originalImage, File thumbFile, String thumbPath) async {
+    final originalPath = originalImage.path;
     if (_isVideoButton(originalPath)) {
       final realExt = _getRealExtension(originalPath); 
       final tempPath = '$originalPath$realExt'; 
@@ -296,7 +343,7 @@ if (!await _ffprobeExe!.exists()) {
           // --- ¡EL TRUCO ROBADO DEL PREVIEW ANIMADO! ---
           double startTimeInSeconds = 0.0;
           if (_ffprobeExe != null && await _ffprobeExe!.exists()) {
-            final probeResult = await Process.run(_ffprobeExe!.path, [
+            final probeResult = await _runTracked(_ffprobeExe!.path, [
               '-v', 'error',
               '-show_entries', 'format=duration',
               '-of', 'default=noprint_wrappers=1:nokey=1',
@@ -311,7 +358,7 @@ if (!await _ffprobeExe!.exists()) {
             }
           }
 
-          final result = await Process.run(_ffmpegExe!.path, [
+          final result = await _runTracked(_ffmpegExe!.path, [
             // IMPORTANTE: -ss va ANTES de -i para que salte la basura inicial instantáneamente
             '-ss', startTimeInSeconds.toStringAsFixed(2), 
             '-i', tempPath,
@@ -366,12 +413,32 @@ if (!await _ffprobeExe!.exists()) {
       final realExt = _getRealExtension(originalImage.path);
       bool success = false;
 
-      if (realExt == '.gif') {
-        // ¡Usamos el nuevo motor para GIFs!
-        success = await _generateWithGif2Webp(originalImage.path, thumbFile.path, 256);
-      } else {
-        // Usamos cwebp normal para JPG, PNG, y WebP estático
-        success = await _generateWithCwebp(originalImage.path, thumbFile.path, 256);
+      // Se escribe primero a un archivo temporal y solo se renombra al terminar
+      // bien: si la app se cierra (o el proceso se mata) a mitad de una
+      // miniatura, no queda un .thumb.vtx a medias que luego se dé por bueno.
+      final tmpThumbPath = '${thumbFile.path}.tmp';
+      try {
+        if (realExt == '.gif') {
+          // ¡Usamos el nuevo motor para GIFs!
+          success = await _generateWithGif2Webp(originalImage.path, tmpThumbPath, 256);
+        } else if (realExt == '.avif') {
+          // Ni cwebp ni Flutter leen AVIF: ffmpeg lo decodifica y cwebp comprime.
+          success = await _generateAvifThumbnail(originalImage.path, tmpThumbPath, 256);
+        } else {
+          // Usamos cwebp normal para JPG, PNG, y WebP estático
+          success = await _generateWithCwebp(originalImage.path, tmpThumbPath, 256);
+        }
+        if (success) {
+          await File(tmpThumbPath).rename(thumbFile.path);
+        }
+      } catch (e) {
+        success = false;
+        debugPrint("Error al generar miniatura de imagen: $e");
+      } finally {
+        try {
+          final leftover = File(tmpThumbPath);
+          if (await leftover.exists()) await leftover.delete();
+        } catch (_) {}
       }
 
       if (success) {
@@ -390,7 +457,7 @@ if (!await _ffprobeExe!.exists()) {
     if (_gif2webpExe == null || !await _gif2webpExe!.exists()) return false;
 
     try {
-      final result = await Process.run(_gif2webpExe!.path, [
+      final result = await _runTracked(_gif2webpExe!.path, [
         '-q', '60', // Calidad ajustada para miniaturas ligeras
         '-resize', width.toString(), '0', // Redimensionar manteniendo aspecto
         '-min_size', // Optimiza los frames para que pese menos
@@ -410,7 +477,7 @@ if (!await _ffprobeExe!.exists()) {
 
     try {
       // Orden: "ejecuta cwebp silenciosamente, redimensiona el ancho a 256 y guarda"
-      final result = await Process.run(_cwebpExe!.path, [
+      final result = await _runTracked(_cwebpExe!.path, [
         '-quiet',
         '-resize', width.toString(), '0',
         '-q', '75', // Calidad de compresión
@@ -487,17 +554,21 @@ if (!await _ffprobeExe!.exists()) {
       return animFile;
     }
 
+    if (_isExiting) return null;
+
     final realExt = _getRealExtension(originalPath);
     final tempPath = '$originalPath$realExt';
+    final animTmpPath = '$animPath.tmp';
     bool renamed = false;
 
+    _activeOps++;
     try {
       await originalVideo.rename(tempPath);
       renamed = true;
 
       // --- PASO 1: EL ESPÍA (ffprobe) ---
       // Le pedimos que nos devuelva SOLO la duración en segundos (ej. "120.5")
-      final probeResult = await Process.run(_ffprobeExe!.path, [
+      final probeResult = await _runTracked(_ffprobeExe!.path, [
         '-v', 'error',
         '-show_entries', 'format=duration',
         '-of', 'default=noprint_wrappers=1:nokey=1',
@@ -515,7 +586,7 @@ if (!await _ffprobeExe!.exists()) {
       }
 
       // --- PASO 2: EL CREADOR (ffmpeg) ---
-      final result = await Process.run(_ffmpegExe!.path, [
+      final result = await _runTracked(_ffmpegExe!.path, [
         // Usamos el tiempo exacto que calculamos
         '-ss', startTimeInSeconds.toStringAsFixed(2), 
         '-t', '3',         
@@ -524,10 +595,11 @@ if (!await _ffprobeExe!.exists()) {
         '-loop', '0',
         '-f', 'webp',      
         '-y',              
-        animPath
+        animTmpPath
       ]);
 
       if (result.exitCode == 0) {
+        await File(animTmpPath).rename(animPath);
         return animFile;
       } else {
         debugPrint("Error en FFmpeg: ${result.stderr}");
@@ -537,9 +609,241 @@ if (!await _ffprobeExe!.exists()) {
       debugPrint("Excepción al generar animación: $e");
       return null;
     } finally {
+      // Devolver SIEMPRE su nombre al video, aunque ffmpeg haya sido cancelado.
       if (renamed) {
-        await File(tempPath).rename(originalPath);
+        try {
+          await File(tempPath).rename(originalPath);
+        } catch (e) {
+          debugPrint("No se pudo restaurar el nombre de $originalPath: $e");
+        }
       }
+      try {
+        final leftover = File(animTmpPath);
+        if (await leftover.exists()) await leftover.delete();
+      } catch (_) {}
+      _activeOps--;
     }
+  }
+
+  // ------------------------------------------------------------------------
+  // PROCESOS EXTERNOS RASTREADOS Y CIERRE ORDENADO
+  // ------------------------------------------------------------------------
+
+  /// Igual que Process.run, pero recuerda el proceso para poder cancelarlo al
+  /// cerrar la app y no lanza procesos nuevos cuando ya se está cerrando.
+  Future<ProcessResult> _runTracked(String executable, List<String> arguments) async {
+    if (_isExiting) {
+      return ProcessResult(0, -1, '', 'cancelado: la app se está cerrando');
+    }
+    final process = await Process.start(executable, arguments);
+    _runningProcesses.add(process);
+    try {
+      const decoder = Utf8Decoder(allowMalformed: true);
+      // Hay que vaciar stdout/stderr siempre; si no, ffmpeg puede quedarse bloqueado.
+      final stdoutFuture = process.stdout.transform(decoder).join();
+      final stderrFuture = process.stderr.transform(decoder).join();
+      final exitCode = await process.exitCode;
+      return ProcessResult(process.pid, exitCode, await stdoutFuture, await stderrFuture);
+    } finally {
+      _runningProcesses.remove(process);
+    }
+  }
+
+  /// Prepara el cierre de la app: no se empieza nada nuevo, se deja terminar lo
+  /// que está en curso ([grace]) y, si algo sigue vivo, se cancelan los
+  /// procesos externos (ffmpeg, cwebp...) y se espera a que cada operación
+  /// restaure sus archivos (nombres de videos, temporales) hasta [limit].
+  Future<void> prepareForExit({
+    Duration grace = const Duration(seconds: 3),
+    Duration limit = const Duration(seconds: 8),
+  }) async {
+    _isExiting = true;
+    final started = DateTime.now();
+    while (_activeOps > 0) {
+      final elapsed = DateTime.now().difference(started);
+      if (elapsed >= limit) break;
+      if (elapsed >= grace) {
+        for (final proc in _runningProcesses.toList()) {
+          try {
+            proc.kill();
+          } catch (_) {}
+        }
+      }
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
+  }
+
+  /// Borra restos de generaciones interrumpidas (archivos .tmp) de sesiones
+  /// anteriores. Solo toca archivos con más de 10 minutos para no pisar
+  /// trabajo de esta misma sesión.
+  Future<void> _sweepTemporaryFiles() async {
+    final cutoff = DateTime.now().subtract(const Duration(minutes: 10));
+    for (final dir in [_thumbnailDir, _viewDir]) {
+      if (dir == null) continue;
+      try {
+        await for (final entity in dir.list(followLinks: false)) {
+          if (entity is! File) continue;
+          final name = p.basename(entity.path);
+          final looksTemporary = name.endsWith('.tmp') ||
+              name.contains('.tmp.') ||
+              name.endsWith('.vtx.jpg'); // temporal antiguo de miniaturas de video
+          if (!looksTemporary) continue;
+          try {
+            if ((await entity.lastModified()).isBefore(cutoff)) await entity.delete();
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+  }
+
+  // ------------------------------------------------------------------------
+  // AVIF (Flutter no lo decodifica: se convierte con el ffmpeg incluido)
+  // ------------------------------------------------------------------------
+
+  /// true si el archivo (por su extensión real, incluso oculta tras .vtx) es AVIF.
+  bool isAvif(String path) => _getRealExtension(path) == '.avif';
+
+  /// Devuelve un archivo que Flutter sí pueda dibujar. Para AVIF genera una vez
+  /// una copia JPEG de alta calidad (caché en disco con límite de tamaño); para
+  /// cualquier otro formato devuelve el mismo archivo. El original NO se toca.
+  /// Nunca lanza: si la conversión falla devuelve el original.
+  Future<File> getViewableFile(File original) async {
+    if (!isAvif(original.path) || _isExiting) return original;
+    final key = original.path;
+    final pending = _viewInFlight[key];
+    if (pending != null) return pending;
+
+    final future = _decodeAvifForViewing(original);
+    _viewInFlight[key] = future;
+    try {
+      return await future;
+    } finally {
+      _viewInFlight.remove(key);
+    }
+  }
+
+  Future<File> _decodeAvifForViewing(File original) async {
+    _activeOps++;
+    String? tmpPath;
+    try {
+      if (!_isInitialized) await initialize();
+      final ffmpeg = _ffmpegExe;
+      final dir = _viewDir;
+      if (ffmpeg == null || dir == null || !await ffmpeg.exists()) return original;
+
+      final stat = await original.stat();
+      if (stat.type == FileSystemEntityType.notFound) return original;
+
+      // La clave incluye tamaño y fecha: si el archivo cambia, se reconvierte.
+      final base = p.basenameWithoutExtension(original.path);
+      final viewPath = p.join(
+          dir.path, '${base}_${stat.size}_${stat.modified.millisecondsSinceEpoch}.view.jpg');
+      final viewFile = File(viewPath);
+
+      if (await viewFile.exists() && await viewFile.length() > 0) {
+        try {
+          await viewFile.setLastModified(DateTime.now()); // "usado hace poco" para el LRU
+        } catch (_) {}
+        return viewFile;
+      }
+
+      tmpPath = '$viewPath.tmp.jpg';
+      final result = await _runTracked(ffmpeg.path, [
+        '-hide_banner', '-loglevel', 'error',
+        '-f', 'mov', // fuerza el lector correcto: el archivo se llama .vtx
+        '-i', original.path,
+        '-frames:v', '1',
+        '-q:v', '2', // JPEG de alta calidad
+        '-update', '1',
+        '-y',
+        tmpPath,
+      ]);
+
+      if (result.exitCode != 0 || !await File(tmpPath).exists() || await File(tmpPath).length() < 100) {
+        debugPrint("No se pudo convertir el AVIF ${original.path}: ${result.stderr}");
+        return original;
+      }
+
+      await File(tmpPath).rename(viewPath);
+      unawaited(_evictViewCache());
+      return viewFile;
+    } catch (e) {
+      debugPrint("Error al convertir AVIF para vista completa: $e");
+      return original;
+    } finally {
+      if (tmpPath != null) {
+        try {
+          final leftover = File(tmpPath);
+          if (await leftover.exists()) await leftover.delete();
+        } catch (_) {}
+      }
+      _activeOps--;
+    }
+  }
+
+  /// Miniatura de un AVIF: ffmpeg lo decodifica y reduce a un PNG pequeño y
+  /// cwebp lo comprime al mismo formato WebP que usan las demás miniaturas.
+  Future<bool> _generateAvifThumbnail(String inputPath, String outputPath, int width) async {
+    final ffmpeg = _ffmpegExe;
+    if (ffmpeg == null || !await ffmpeg.exists()) return false;
+
+    final tmpPng = '$outputPath.tmp.png';
+    try {
+      final result = await _runTracked(ffmpeg.path, [
+        '-hide_banner', '-loglevel', 'error',
+        '-f', 'mov',
+        '-i', inputPath,
+        '-frames:v', '1',
+        '-vf', 'scale=$width:-1:flags=lanczos',
+        '-update', '1',
+        '-y',
+        tmpPng,
+      ]);
+      if (result.exitCode != 0 || !await File(tmpPng).exists()) {
+        debugPrint("Error ffmpeg (miniatura AVIF): ${result.stderr}");
+        return false;
+      }
+
+      if (await _generateWithCwebp(tmpPng, outputPath, width)) return true;
+      // Si cwebp fallara, el PNG de 256 px también sirve como miniatura.
+      await File(tmpPng).copy(outputPath);
+      return true;
+    } catch (e) {
+      debugPrint("Error generando miniatura AVIF: $e");
+      return false;
+    } finally {
+      try {
+        final leftover = File(tmpPng);
+        if (await leftover.exists()) await leftover.delete();
+      } catch (_) {}
+    }
+  }
+
+  /// Mantiene la caché de copias AVIF por debajo de [_maxViewCacheBytes],
+  /// borrando primero las menos usadas recientemente.
+  Future<void> _evictViewCache() async {
+    final dir = _viewDir;
+    if (dir == null) return;
+    try {
+      final stats = <File, FileStat>{};
+      var total = 0;
+      await for (final entity in dir.list(followLinks: false)) {
+        if (entity is! File) continue;
+        final s = await entity.stat();
+        stats[entity] = s;
+        total += s.size;
+      }
+      if (total <= _maxViewCacheBytes) return;
+
+      final files = stats.keys.toList()
+        ..sort((a, b) => stats[a]!.modified.compareTo(stats[b]!.modified));
+      for (final f in files) {
+        if (total <= _maxViewCacheBytes * 0.8) break;
+        try {
+          await f.delete();
+          total -= stats[f]!.size;
+        } catch (_) {} // en uso: se intentará en la próxima pasada
+      }
+    } catch (_) {}
   }
 }

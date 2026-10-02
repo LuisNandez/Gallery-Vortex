@@ -5,15 +5,18 @@ import 'package:flutter/rendering.dart';
 import 'dart:math' as math;
 import 'package:flutter/services.dart';
 import 'ui_utils.dart';
+import 'wd14_tagger_service.dart';
 
 class TagEditorDialog extends StatefulWidget {
   final List<String> imageIds;
   final MetadataService metadataService;
+  final String vaultRootPath;
 
   const TagEditorDialog({
     super.key,
     required this.imageIds,
     required this.metadataService,
+    required this.vaultRootPath,
   });
 
   @override
@@ -34,6 +37,10 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
   static List<String> _appCopiedTags = [];
   
   String? _clipboardPreview;
+
+  bool _isAutoTagging = false;
+  int _autoTagCurrent = 0;
+  int _autoTagTotal = 0;
 
   @override
   void dispose() {
@@ -157,6 +164,136 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
     _ensureWithinBounds();
   }
 
+  Future<void> _confirmDeleteAllTags() async {
+    if (_currentTags.isEmpty) return;
+    final multi = widget.imageIds.length > 1;
+    final confirm = await showDialog<bool>(
+          context: context,
+          barrierColor: Colors.black.withOpacity(0.4),
+          builder: (context) => Dialog(
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(14.0),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                child: Container(
+                  width: 320,
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF2C2C2E).withOpacity(0.8),
+                    border: Border.all(color: Colors.white12, width: 0.5),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 28),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Eliminar todas las etiquetas',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        multi
+                            ? 'Se quitarán todas las etiquetas de las ${widget.imageIds.length} imágenes seleccionadas.'
+                            : 'Se quitarán todas las etiquetas de este archivo.',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white70, fontSize: 14),
+                      ),
+                      const SizedBox(height: 24),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            style: TextButton.styleFrom(foregroundColor: Colors.white70),
+                            child: const Text('Cancelar', style: TextStyle(fontWeight: FontWeight.w500)),
+                          ),
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+                            child: const Text('Eliminar todas', style: TextStyle(fontWeight: FontWeight.w600)),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ) ??
+        false;
+
+    if (!confirm) return;
+    setState(() => _currentTags.clear());
+    await widget.metadataService.clearTagsForImages(widget.imageIds);
+    _ensureWithinBounds();
+  }
+
+  // Recalcula _currentTags igual que en initState: para 1 imagen son sus
+  // tags, para varias es la intersección. Se usa tras el etiquetado con IA,
+  // que puede añadir tags distintas a cada imagen del lote.
+  void _recomputeCurrentTagsFromService() {
+    if (widget.imageIds.length == 1) {
+      _currentTags = widget.metadataService.getMetadataForImage(widget.imageIds.first).tags.toSet();
+    } else {
+      final allTagsLists = widget.imageIds
+          .map((id) => widget.metadataService.getMetadataForImage(id).tags.toSet());
+      _currentTags = allTagsLists.reduce((a, b) => a.intersection(b));
+    }
+  }
+
+  Future<void> _autoTagWithAI() async {
+    if (_isAutoTagging) return;
+    setState(() {
+      _isAutoTagging = true;
+      _autoTagCurrent = 0;
+      _autoTagTotal = widget.imageIds.length;
+    });
+
+    int tagged = 0;
+    String? firstError;
+
+    for (final imageId in widget.imageIds) {
+      try {
+        final tags = await Wd14TaggerService.instance.tagImageNow(
+          imageId: imageId,
+          vaultRootPath: widget.vaultRootPath,
+        );
+        if (tags.isNotEmpty) {
+          await widget.metadataService.addTagsToImage(imageId, tags);
+          tagged++;
+        }
+      } catch (e) {
+        firstError ??= e.toString();
+        // Si falla la primera (p. ej. servidor no instalado), no tiene
+        // sentido seguir intentando con el resto: cortamos ahí.
+        if (tagged == 0 && widget.imageIds.first == imageId) break;
+      }
+      if (mounted) setState(() => _autoTagCurrent++);
+    }
+
+    _recomputeCurrentTagsFromService();
+
+    if (mounted) {
+      setState(() => _isAutoTagging = false);
+      if (tagged > 0) {
+        showGlassSnackBar(
+          context,
+          widget.imageIds.length == 1
+              ? 'Imagen etiquetada con IA'
+              : '$tagged de ${widget.imageIds.length} imágenes etiquetadas con IA',
+          icon: Icons.auto_awesome,
+        );
+      } else if (firstError != null) {
+        showGlassSnackBar(context, firstError, icon: Icons.error_outline, iconColor: Colors.redAccent);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
@@ -224,6 +361,28 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
+                            IconButton(
+                              icon: _isAutoTagging
+                                  ? SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.white.withOpacity(0.8),
+                                      ),
+                                    )
+                                  : const Icon(Icons.auto_awesome, size: 18),
+                              color: _isAutoTagging ? null : const Color(0xFF0A84FF),
+                              tooltip: _isAutoTagging
+                                  ? 'Etiquetando ${_autoTagCurrent}/${_autoTagTotal}...'
+                                  : (widget.imageIds.length == 1
+                                      ? 'Etiquetar esta imagen con IA (WD14)'
+                                      : 'Etiquetar estas ${widget.imageIds.length} imágenes con IA (WD14)'),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                              onPressed: _isAutoTagging ? null : _autoTagWithAI,
+                            ),
+                            const SizedBox(width: 16),
                             IconButton(
                               icon: const Icon(Icons.copy, size: 18),
                               // Si hay etiquetas actuales, brilla. Si no, se apaga.
@@ -406,13 +565,21 @@ class _TagEditorDialogState extends State<TagEditorDialog> {
                     ),
                   const SizedBox(height: 24),
                   
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      style: TextButton.styleFrom(foregroundColor: const Color(0xFF0A84FF)), 
-                      child: const Text('Cerrar', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
-                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: _currentTags.isEmpty ? null : _confirmDeleteAllTags,
+                        style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+                        child: const Text('Eliminar todas', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                      ),
+                      const SizedBox(width: 12),
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        style: TextButton.styleFrom(foregroundColor: const Color(0xFF0A84FF)), 
+                        child: const Text('Cerrar', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                      ),
+                    ],
                   ),
                 ],
               ),
